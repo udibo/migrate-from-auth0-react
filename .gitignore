@@ -23,3 +23,5 @@ yarn-debug.log*
 yarn-error.log*
 
 auth_config.json
+# Vite's build output (vite.config.js sets outDir to dist)
+/dist
