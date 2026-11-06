@@ -1,0 +1,67 @@
+name: Live tenant
+
+# Runs the browser tests against the Auth0 development tenant. The tenant
+# holds synthetic users only. Every value comes from the repository's secrets;
+# see "Test against an Auth0 tenant" in the README. Without them the job
+# reports that it skipped and passes.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-tenant
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test against the Auth0 tenant
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # The secrets reach only these two steps, never npm ci's install
+      # scripts.
+      - name: Check the tenant is configured
+        id: configured
+        env:
+          AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
+          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
+          AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}
+          AUTH0_TEST_USERNAME: ${{ secrets.AUTH0_TEST_USERNAME }}
+          AUTH0_TEST_PASSWORD: ${{ secrets.AUTH0_TEST_PASSWORD }}
+        run: |
+          missing=""
+          for name in AUTH0_DOMAIN AUTH0_CLIENT_ID AUTH0_AUDIENCE AUTH0_TEST_USERNAME AUTH0_TEST_PASSWORD; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::notice title=Live tenant skipped::No Auth0 tenant is configured (missing:$missing). Add the AUTH0_* repository secrets listed in the README."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.configured.outputs.ready == 'true'
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - if: steps.configured.outputs.ready == 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - if: steps.configured.outputs.ready == 'true'
+        run: npm ci
+      - if: steps.configured.outputs.ready == 'true'
+        run: npx playwright install --with-deps chromium
+      - if: steps.configured.outputs.ready == 'true'
+        run: npm run test:e2e
+        env:
+          AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
+          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
+          AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}
+          AUTH0_TEST_USERNAME: ${{ secrets.AUTH0_TEST_USERNAME }}
+          AUTH0_TEST_PASSWORD: ${{ secrets.AUTH0_TEST_PASSWORD }}
