@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { freePort, start } from "./servers.mjs";
 
@@ -20,6 +23,31 @@ describe("the API server's configuration", { timeout: 20_000 }, () => {
       assert.match(api.output(), /Exiting API Server: Please make sure AUTH0_DOMAIN and AUTH0_AUDIENCE/);
     });
   }
+});
+
+describe("a filled .env.local", { timeout: 20_000 }, () => {
+  let dir;
+
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "env-local-"));
+    writeFileSync(join(dir, ".env.local"), `AUTH0_DOMAIN=${TENANT.AUTH0_DOMAIN}\nAUTH0_AUDIENCE=${TENANT.AUTH0_AUDIENCE}\n`);
+  });
+
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  test("configures the API when nothing else sets its variables", async () => {
+    const api = await start("api-server.js", { API_PORT: String(await freePort()) }, { cwd: dir, isolate: false });
+    await api.stop();
+    assert.equal(api.exitCode, null, api.output());
+    assert.match(api.output(), /API Server listening on port/);
+  });
+
+  test("does not reach the tests, which set every variable the sample reads", async () => {
+    const api = await start("api-server.js", { API_PORT: String(await freePort()) }, { cwd: dir });
+    await api.stop();
+    assert.equal(api.exitCode, 0);
+    assert.match(api.output(), /Exiting API Server/);
+  });
 });
 
 describe("the API server", { timeout: 20_000 }, () => {

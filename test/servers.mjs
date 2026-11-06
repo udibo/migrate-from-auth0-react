@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const root = fileURLToPath(new URL("..", import.meta.url));
@@ -17,13 +18,26 @@ export async function freePort() {
 }
 
 /**
- * Runs `node <script>` from the repository root with `env` laid over a
- * minimal environment, resolving once it prints `ready` or exits.
+ * Every variable the sample reads, set empty. api-server.js loads .env.local
+ * with dotenv, which never overrides a variable already set, so a developer's
+ * filled .env.local cannot reach a test.
  */
-export async function start(script, env, ready = /listening on port/i) {
-  const child = spawn(process.execPath, [script], {
-    cwd: root,
-    env: { PATH: process.env.PATH, ...env },
+export const UNSET = Object.fromEntries(
+  ["AUTH0_DOMAIN", "AUTH0_CLIENT_ID", "AUTH0_AUDIENCE", "API_BASE_URL", "APP_BASE_URL", "API_PORT", "SERVER_PORT", "NODE_ENV"].map(
+    (name) => [name, ""],
+  ),
+);
+
+/**
+ * Runs `node <script>` (relative to the repository root) in `cwd` with `env`
+ * laid over a minimal environment, resolving once it prints `ready` or exits.
+ * Pass `isolate: false` to leave the sample's variables unset, so dotenv can
+ * fill them.
+ */
+export async function start(script, env, { ready = /listening on port/i, cwd = root, isolate = true } = {}) {
+  const child = spawn(process.execPath, [join(root, script)], {
+    cwd,
+    env: { PATH: process.env.PATH, ...(isolate ? UNSET : {}), ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
