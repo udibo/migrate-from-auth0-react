@@ -89,11 +89,13 @@ npm run test:e2e         # signs in through the Auth0 tenant in Chromium
 
 `npm run test:behavior` starts `api-server.js` and `server.js` as child
 processes on free ports. Every request it makes is refused or answered before
-the API reads the tenant's metadata, so it runs with a placeholder tenant:
+the API reads the tenant's metadata, so it runs with a placeholder tenant. It
+sets every variable the sample reads, empty where a test needs it unset, so a
+filled `.env.local` cannot change what it tests:
 
 | Area | What the tests pin |
 | --- | --- |
-| API configuration | Exits with status 0, serving nothing, without `AUTH0_DOMAIN`, without `AUTH0_AUDIENCE`, or with upstream's placeholder audience |
+| API configuration | Exits with status 0, serving nothing, without `AUTH0_DOMAIN`, without `AUTH0_AUDIENCE`, or with upstream's placeholder audience; reads `.env.local` only for what the environment leaves unset |
 | API refusals | 401 with a `Bearer realm="api"` challenge without a token; 400 for an `Authorization` header that is not Bearer; 404 for any other path |
 | API errors | The refusal carries the stack trace outside production, and not with `NODE_ENV=production` |
 | API CORS | Names only `http://localhost:3000`, or `APP_BASE_URL` when set, whatever origin asks |
@@ -104,7 +106,9 @@ ports, 3000 and 3001, because Auth0 returns the browser only to a registered
 URL. It reads `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_AUDIENCE`,
 `AUTH0_TEST_USERNAME` and `AUTH0_TEST_PASSWORD` from the environment or
 `.env.local`, and skips every test when any is missing. It compares tenant
-values in code, so a failure says what differed without printing them.
+values in code, so a failure says what differed without printing them, and
+fails at once, with Auth0's `error` and `error_description`, when Auth0 sends
+the browser back to the app with an error instead of showing its login page.
 Nothing stands in for Auth0:
 
 | Test | What it pins |
@@ -115,6 +119,7 @@ Nothing stands in for Auth0:
 | Profile | After signing in, the profile page shows the test user's email and an `auth0\|` subject |
 | The API | Accepts the access token the app sends, a JWT from the tenant for the API's audience and this client, and refuses it with 401 `invalid_token` once its signature is altered |
 | Logging out | Returns to the app signed out, and the next protected page asks Auth0 for the password again |
+| Another API's token | A client-credentials token from the same tenant for `https://other-api.example` gets 401 `invalid_token`. Needs `AUTH0_OTHER_AUDIENCE_CLIENT_ID` and `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET`, and skips alone without them |
 
 CI runs `npm test` and `npm run test:behavior` on Node 22 and 24 for every
 push and pull request, with no secrets. The **Live tenant** workflow runs
@@ -138,21 +143,31 @@ dashboard:
 2. **API.** _Applications → APIs → Create API_, any name, the _Identifier_
    `https://migrate-from-auth0-react.example/api` (the audience; it is never
    fetched), signing algorithm **RS256**, and _Allow Skipping User Consent_
-   on. If the tenant limits which applications may get user tokens for an
-   API, allow this application.
-3. **Test user.** _User Management → Users → Create User_ in
+   on.
+3. **The application's access to the API.** In the application's **APIs**
+   tab, authorize it for this API with **user access**. Without it, Auth0
+   sends the browser back to the app with an error instead of its login page:
+   `Client "…" is not authorized to access resource server "…"`.
+4. **Test user.** _User Management → Users → Create User_ in
    **Username-Password-Authentication**, with a synthetic email address and a
    password, and mark the email verified. Sign in as it once yourself to see
    that no extra step appears.
-4. **No extra sign-in steps.** _Security → Multi-factor Auth_: **Never** (or
-   no factor enabled). _Security → Attack Protection → Bot Detection_: off,
-   since a CAPTCHA stops an automated sign-in. Leave brute-force protection on:
+5. **No extra sign-in steps.** _Security → Multi-factor Auth_: **Never** (or
+   no factor enabled). _Security → Attack Protection → Bot Detection_:
+   **off**, since a CAPTCHA stops an automated sign-in. Leave brute-force protection on:
    each run makes one wrong-password attempt, then signs in.
-5. **Login experience.** Universal Login, the default. The tests fill the
+6. **Login experience.** Universal Login, the default. The tests fill the
    username and password fields on one page, or on two when the tenant asks
    for the identifier first. They accept Auth0's consent page when it
    appears: Auth0 shows it for a `localhost` callback even when the API
    allows skipping consent.
+7. **A second API, for the audience test.** _Applications → APIs → Create
+   API_ with the _Identifier_ `https://other-api.example`, signing algorithm
+   **RS256**. Then _Applications → Create Application_, type **Machine to
+   Machine Applications**, and authorize it for `https://other-api.example`
+   only (no scopes needed). Its Client ID and Client Secret are the two
+   optional secrets below; without them the audience test skips and the rest
+   run.
 
 Then add these **repository secrets** (_Settings → Secrets and variables →
 Actions_):
@@ -164,9 +179,11 @@ Actions_):
 | `AUTH0_AUDIENCE` | The API's Identifier, `https://migrate-from-auth0-react.example/api` |
 | `AUTH0_TEST_USERNAME` | The test user's email address |
 | `AUTH0_TEST_PASSWORD` | The test user's password |
+| `AUTH0_OTHER_AUDIENCE_CLIENT_ID` | Optional: the machine-to-machine application's Client ID |
+| `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET` | Optional: its Client Secret |
 
-For a local run, put the same five names and values in `.env.local`, which
-git ignores. The workflow passes the secrets only to the steps that check
+For a local run, put the same names and values in `.env.local`, which git
+ignores. The workflow passes the secrets only to the steps that check
 for them and run the tests, and records no Playwright trace in CI, since a
 trace includes what each step typed.
 
@@ -174,7 +191,7 @@ trace includes what each step typed.
 
 | Step | `@udibo/oauth2` | Node.js | Last live run |
 | --- | --- | --- | --- |
-| 0 | not used | 22, 24 (CI); 26 (locally) | not yet run: no tenant configured |
+| 0 | not used | 22, 24 (CI); 26 (locally) | 2026-11-06, [run 42172564187](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42172564187): 6 of 6 passed |
 
 ## The upstream sample's README
 
