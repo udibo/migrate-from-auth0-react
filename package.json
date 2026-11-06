@@ -2,6 +2,9 @@
   "name": "auth0-react-sample",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "start": "npm-run-all --parallel spa api-server",
     "build": "vite build",
@@ -12,7 +15,9 @@
     "api-server": "node api-server.js",
     "api-server:dev": "nodemon api-server.js",
     "dev": "npm-run-all --parallel spa api-server:dev",
-    "prod": "npm-run-all --parallel server api-server"
+    "prod": "npm-run-all --parallel server api-server",
+    "test:behavior": "vite build && node --test \"test/*.behavior.mjs\"",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@auth0/auth0-react": "^2.16.0",
@@ -39,6 +44,7 @@
     "@babel/core": "^7.29",
     "@babel/preset-env": "7.29.2",
     "@babel/preset-react": "7.28.5",
+    "@playwright/test": "1.64.1",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.0",
     "babel-jest": "^30.3.0",
