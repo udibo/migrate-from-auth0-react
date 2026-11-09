@@ -14,7 +14,7 @@ exactly what that step changes.
 | Tag | What the app signs in with |
 | --- | --- |
 | `step-0-upstream` | The upstream sample: `@auth0/auth0-react` and Auth0 |
-| `step-1-udibo-package` | `@udibo/oauth2`, still against Auth0 _(not yet published)_ |
+| `step-1-udibo-package` | `@udibo/oauth2`, still against Auth0 |
 | `step-2-udibo-idp` | `@udibo/oauth2` against Udibo's hosted identity service _(not yet published)_ |
 | `step-3-user-import` | Users imported from Auth0 into Udibo _(not yet published)_ |
 
@@ -54,16 +54,127 @@ because they are the baseline it is compared with:
 - **The API answers errors with stack traces** unless `NODE_ENV` is
   `production`: Express's default error handler renders the refusal with its
   stack, file paths included.
-- **The API exits with status 0** when `AUTH0_DOMAIN` or `AUTH0_AUDIENCE` is
-  missing, so a supervisor sees a clean exit, not a failure.
+- **The API exits with status 0** when its domain or audience is missing, so
+  a supervisor sees a clean exit, not a failure.
 - **The production server sends no Content-Security-Policy:** `server.js`
   turns off helmet's.
 - **`npm audit` reports 31 advisories** in upstream's lockfile (2 critical,
   10 high, 15 moderate, 4 low), most of them in the build and test tooling
   (Vite, jest, babel, nodemon) and some in what the servers run: `express`'s
   dependencies `body-parser`, `qs` and `proxy-addr` (critical), `morgan`, and
-  `react-router-dom` 6.30.3 in the browser. Step 0 keeps them; a later step
-  moves its own dependencies.
+  `react-router-dom` 6.30.3 in the browser. Step 0 keeps them; step 1
+  upgrades its dependencies.
+
+## Step 1: @udibo/oauth2, still signing in through Auth0
+
+Step 1 replaces `@auth0/auth0-react` with
+[`@udibo/oauth2`](https://github.com/udibo/oauth2) 0.51.0 and changes nothing
+at Auth0: the same application, API, user and settings as step 0. It is the
+first half of the switch: the app now runs on a provider-neutral OAuth2
+client, so step 2 can move it to Udibo by changing configuration.
+
+### What changes in the app
+
+| Step 0 (`@auth0/auth0-react`) | Step 1 (`@udibo/oauth2`) |
+| --- | --- |
+| `<Auth0Provider domain clientId authorizationParams>` | `<OAuth2Provider client>` with a `DirectClient` (`src/auth.js`): a public client with PKCE (S256) and `state`, pending sign-ins in `sessionStorage`, tokens in memory |
+| The SDK completes the sign-in on whichever page Auth0 returns to | The home route renders `<OAuth2Callback>` when it carries `code` (or `error`) and `state`, then navigates to where the sign-in started |
+| `useAuth0()` | `useOAuth2()` for the user, `isLoading`, `error`, `login` and `logout`; `useDirectClient()` for the access token |
+| `withAuthenticationRequired(Component)` | `<RequireAuth fallback={<Loading />}>` around the component |
+| `getAccessTokenSilently()` | `client.getAccessToken()` |
+| `loginWithPopup()` and `getAccessTokenWithPopup()` on the API page | A redirect sign-in that comes back to the page (`login({ returnTo })`, and `prompt=consent` for consent): the package has no pop-up flow |
+| `logout({ logoutParams: { returnTo } })` | `logout({ returnTo })`, which sends the browser to the tenant's `end_session_endpoint` (`/oidc/logout`) with `id_token_hint` and `post_logout_redirect_uri` |
+| `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_AUDIENCE` | `OAUTH_ISSUER` (for Auth0, `https://<domain>/`), `OAUTH_CLIENT_ID`, `OAUTH_AUDIENCE`, read by both the app and the API |
+
+`DirectClient` takes no default authorization-request parameter, and
+`RequireAuth` and `useOAuth2().login()` pass only `returnTo`, so `src/auth.js`
+subclasses it to add `audience` to every sign-in
+([udibo/oauth2#189](https://github.com/udibo/oauth2/issues/189)). Without
+`audience`, Auth0 issues an opaque access token for its own `/userinfo`
+endpoint, as its documentation describes, which the API cannot verify.
+
+**The API stays on `express-oauth2-jwt-bearer`.** Moving it to the package's
+resource server (`ExpressResourceServer` with `JwksTokenReader`) needs an Auth0
+change: the tenant's access tokens use Auth0's default token profile, with
+`typ: JWT` and no `client_id` or `jti` claim, and `JwksTokenReader` accepts
+only RFC 9068 tokens (`typ: at+jwt`, with both claims). Switching the API's
+token profile to RFC 9068 in the Auth0 dashboard would allow it; step 1
+changes nothing at Auth0, so the API moves when its issuer does. The API now
+takes the issuer URL (`OAUTH_ISSUER`) instead of a domain, so it can also check
+the local identity provider's tokens in CI. Its `algorithms: ["RS256"]` is
+upstream's and, as before, has no effect: `express-oauth2-jwt-bearer`'s option
+is `tokenSigningAlg`, so the API accepts any asymmetric algorithm the issuer's
+keys support, which is how it accepts the local provider's ES256 tokens.
+
+### Behaviour that changes
+
+- **No `nonce` and no `response_mode` in the sign-in request.**
+  `DirectClient` relies on PKCE and `state` for the code flow; `response_mode`
+  was `query`, the default for `response_type=code`. The client decodes the
+  ID token from its own token request rather than verifying its signature,
+  which OpenID Connect allows for a token received directly over TLS.
+- **A page load starts signed out.** Tokens are in memory, and Auth0 returns
+  no refresh token to a sign-in without `offline_access` (none came back to
+  this tenant's sign-in), so a reload has nothing to resume from, and the client does not ask Auth0 again in a hidden iframe as Auth0's
+  SDK did. A protected page starts a sign-in, which Auth0 completes without a
+  password while its session lasts. Keeping a session across reloads would
+  need refresh tokens: `offline_access`, _Allow Offline Access_ on the Auth0
+  API, refresh-token rotation for the application, and
+  `IndexedDBRefreshTokenStorage`.
+- **An expired access token needs a new sign-in.** With no refresh token, the
+  API page reports `login_required` and offers to log in again by redirect.
+
+### What Auth0 still needs to be configured with
+
+This is the list of Auth0-specific settings the app depends on at step 1,
+each of which a move to another provider has to replace:
+
+- **The `audience` parameter** on every sign-in, or Auth0 issues an opaque
+  access token for `/userinfo` only, which the API cannot verify. The app adds
+  it in `src/auth.js`, and the sign-in request test checks it is sent.
+- **The application authorized for the API with user access** (the
+  application's **APIs** tab), or Auth0 sends sign-in back with
+  `Client "…" is not authorized to access resource server "…"`.
+- **`http://localhost:3000` in Allowed Callback URLs, Allowed Logout URLs and
+  Allowed Web Origins.** The last lets the browser call `/oauth/token` across
+  origins; Auth0's discovery documents send `Access-Control-Allow-Origin: *`.
+- **The `end_session_endpoint`** in discovery, which RP-Initiated Logout needs.
+  This tenant advertises it (`/oidc/logout`), so logout needs no Auth0-specific
+  call. A tenant that does not would leave the client signing out locally
+  only, with Auth0's session still open.
+- **An API with RS256 signing**, whose access tokens use Auth0's token profile
+  (`typ: JWT`, `azp` for the client, no `client_id` or `jti`).
+- **Consent:** Auth0 shows its consent page for a `localhost` callback even
+  with _Allow Skipping User Consent_ on.
+
+Ruled out: discovery needs nothing special. Auth0 serves both
+`/.well-known/openid-configuration` and
+`/.well-known/oauth-authorization-server`, its issuer
+(`https://<domain>/`, with the trailing slash) matches what the client
+expects, and it advertises S256 PKCE. Auth0 does not send `iss` in the
+authorization response (RFC 9207) and does not advertise it, so the client
+accepts the response without one.
+
+### A backend-for-frontend later?
+
+The package's recommended shape for a browser app is a backend-for-frontend
+(`HonoBff` with `BffClient`), which keeps tokens on a server behind an HttpOnly
+cookie and ends the reload problem above. It is worth an optional later step:
+it changes the app's architecture (a server that holds sessions, and the API
+called through it), which is more than this migration's steps are meant to
+carry. Steps 2 and 3 keep the single-page shape so their diffs stay
+configuration and data.
+
+### Dependencies
+
+Every dependency is now pinned to an exact version, upgraded to the newest
+release at least two weeks old within its major version. React Router moves
+to 7.18.4, a major version, because 6.x has no release without its
+advisories; the app's imports are unchanged. `npm audit` drops from 31
+advisories to 20 (3 low, 17 moderate, none high or critical), all in
+development tools with no fixed release in their major versions: jest's
+`glob`, `minimatch`, `test-exclude` and `deepmerge`, and nodemon's
+`minimatch`. `npm audit --omit=dev` reports none.
 
 ## Run it
 
@@ -72,9 +183,13 @@ Requirements: Node.js 22.12 or later, and an Auth0 tenant set up as in
 
 ```sh
 npm ci
-cp .env.example .env.local   # then fill in AUTH0_DOMAIN, AUTH0_CLIENT_ID and AUTH0_AUDIENCE
+cp .env.example .env.local   # then fill in OAUTH_ISSUER, OAUTH_CLIENT_ID and OAUTH_AUDIENCE
 npm run dev                  # the app on http://localhost:3000, the API on :3001
 ```
+
+For Auth0, `OAUTH_ISSUER` is `https://<your tenant's domain>/`, with the
+trailing slash, `OAUTH_CLIENT_ID` the application's Client ID, and
+`OAUTH_AUDIENCE` the API's Identifier.
 
 `npm run prod` serves the built app (`npm run build` first) with `server.js`
 instead of Vite's development server.
@@ -84,48 +199,65 @@ instead of Vite's development server.
 ```sh
 npm test                 # upstream's component tests (jest)
 npm run test:behavior    # builds the app, then tests both servers; no tenant needed
-npm run test:e2e         # signs in through the Auth0 tenant in Chromium
+npm run test:e2e         # signs in through the local identity provider in Chromium
+E2E_PROVIDER=auth0 npm run test:e2e   # the same tests, through the Auth0 tenant
 ```
 
 `npm run test:behavior` starts `api-server.js` and `server.js` as child
 processes on free ports. Every request it makes is refused or answered before
-the API reads the tenant's metadata, so it runs with a placeholder tenant. It
+the API reads the issuer's metadata, so it runs with a placeholder issuer. It
 sets every variable the sample reads, empty where a test needs it unset, so a
 filled `.env.local` cannot change what it tests:
 
 | Area | What the tests pin |
 | --- | --- |
-| API configuration | Exits with status 0, serving nothing, without `AUTH0_DOMAIN`, without `AUTH0_AUDIENCE`, or with upstream's placeholder audience; reads `.env.local` only for what the environment leaves unset |
+| API configuration | Exits with status 0, serving nothing, without `OAUTH_ISSUER`, without `OAUTH_AUDIENCE`, or with upstream's placeholder audience; reads `.env.local` only for what the environment leaves unset |
 | API refusals | 401 with a `Bearer realm="api"` challenge without a token; 400 for an `Authorization` header that is not Bearer; 404 for any other path |
 | API errors | The refusal carries the stack trace outside production, and not with `NODE_ENV=production` |
 | API CORS | Names only `http://localhost:3000`, or `APP_BASE_URL` when set, whatever origin asks |
 | App server | Every path answers with the built page; the built script is served; no Content-Security-Policy |
 
-`npm run test:e2e` builds the app and starts it and the API on upstream's
-ports, 3000 and 3001, because Auth0 returns the browser only to a registered
-URL. It reads `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_AUDIENCE`,
-`AUTH0_TEST_USERNAME` and `AUTH0_TEST_PASSWORD` from the environment or
-`.env.local`, and skips every test when any is missing. It compares tenant
-values in code, so a failure says what differed without printing them, and
-fails at once, with Auth0's `error` and `error_description`, when Auth0 sends
-the browser back to the app with an error instead of showing its login page.
-Nothing stands in for Auth0:
+`npm run test:e2e` builds the app, starts it and the API, and signs in in
+Chromium through one of two authorization servers, chosen by `E2E_PROVIDER`:
+
+- **By default, `@udibo/oauth2`'s local identity provider** (`udibo-oauth2 idp
+  dev`), seeded from `e2e/idp.json` with a synthetic user and two clients, and
+  started by the test run. It needs no secrets, and CI runs it on every push.
+  The provider sends no CORS headers, so a browser client on another origin
+  cannot call it ([udibo/oauth2#190](https://github.com/udibo/oauth2/issues/190));
+  the tests put a small proxy in front of it (`e2e/cors-proxy.mjs`) that adds
+  them for the app's origin and passes everything else through. The app runs
+  on `http://127.0.0.1:3000` here, or on `E2E_APP_PORT` and `E2E_API_PORT`
+  when 3000 and 3001 are taken.
+- **With `E2E_PROVIDER=auth0`, the Auth0 tenant**, on upstream's ports 3000
+  and 3001, because Auth0 returns the browser only to a registered URL. It
+  reads `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_AUDIENCE`,
+  `AUTH0_TEST_USERNAME` and `AUTH0_TEST_PASSWORD` from the environment or
+  `.env.local`, and refuses to start without them.
+
+The tests compare tenant values in code, so a failure says what differed
+without printing them, and fail at once, with the provider's `error` and
+`error_description`, when it sends the browser back to the app with an error
+instead of showing its login page. Nothing stands in for either provider:
 
 | Test | What it pins |
 | --- | --- |
-| Signed out | The home page offers to log in; `/profile` sends the browser to Auth0's login page |
-| The sign-in request | `response_type=code` with `response_mode=query`, S256 PKCE, `state` and `nonce`, the `openid profile email` scopes, the API's audience, and the app's origin as `redirect_uri` |
-| A wrong password | The user stays at Auth0, signed out |
-| Profile | After signing in, the profile page shows the test user's email and an `auth0\|` subject |
-| The API | Accepts the access token the app sends, a JWT from the tenant for the API's audience and this client, and refuses it with 401 `invalid_token` once its signature is altered |
-| Logging out | Returns to the app signed out, and the next protected page asks Auth0 for the password again |
-| Another API's token | A client-credentials token from the same tenant for `https://other-api.example` gets 401 `invalid_token`. Needs `AUTH0_OTHER_AUDIENCE_CLIENT_ID` and `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET`, and skips alone without them |
+| Signed out | The home page offers to log in; `/profile` sends the browser to the provider's login page |
+| The sign-in request | `response_type=code` (no `response_mode`: `query` is the default), S256 PKCE, `state`, the `openid profile email` scopes, the API's audience, and the app's origin as `redirect_uri` |
+| A wrong password | The user stays at the provider, signed out |
+| Profile | After signing in, the profile page shows the test user's email and the provider's subject (`auth0\|…` at Auth0) |
+| The API | Accepts the access token the app sends, a JWT from the provider for the API's audience and this client, and refuses it with 401 `invalid_token` once its signature is altered |
+| Logging out | Returns to the app signed out, and the next protected page asks the provider for the password again. The local provider advertises no `end_session_endpoint` ([udibo/oauth2#177](https://github.com/udibo/oauth2/issues/177)), so there only the local sign-out is checked |
+| Another API's token | A client-credentials token from the same provider for `https://other-api.example` gets 401 `invalid_token`. At Auth0 it needs `AUTH0_OTHER_AUDIENCE_CLIENT_ID` and `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET`, and skips alone without them |
 
-CI runs `npm test` and `npm run test:behavior` on Node 22 and 24 for every
-push and pull request, with no secrets. The **Live tenant** workflow runs
-`npm run test:e2e` against the tenant weekly and on demand, and reports that
-it skipped while the secrets are missing. The daily run on a new
-`@udibo/oauth2` release starts at step 1, the first step that depends on it.
+CI runs `npm test`, `npm run test:behavior` and `npm run test:e2e` (through
+the local identity provider) on Node 22 and 24 for every push and pull
+request, with no secrets. The **Live tenant** workflow runs the browser tests
+against the Auth0 tenant every Monday and on demand, with the pinned
+`@udibo/oauth2`. On the other days it checks npm for a newer `@udibo/oauth2`
+and, when there is one, installs and tests it, so a release that breaks
+sign-in through Auth0 shows up the day it is published. It reports that it
+skipped while the secrets are missing.
 
 ## Set up the Auth0 tenant
 
@@ -182,8 +314,8 @@ Actions_):
 | `AUTH0_OTHER_AUDIENCE_CLIENT_ID` | Optional: the machine-to-machine application's Client ID |
 | `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET` | Optional: its Client Secret |
 
-For a local run, put the same names and values in `.env.local`, which git
-ignores. The workflow passes the secrets only to the steps that check
+For a local run against the tenant, put the same names and values in
+`.env.local`, which git ignores, and run `E2E_PROVIDER=auth0 npm run test:e2e`. The workflow passes the secrets only to the steps that check
 for them and run the tests, and records no Playwright trace in CI, since a
 trace includes what each step typed.
 
@@ -192,6 +324,7 @@ trace includes what each step typed.
 | Step | `@udibo/oauth2` | Node.js | Last live run |
 | --- | --- | --- | --- |
 | 0 | not used | 22, 24 (CI); 26 (locally) | 2026-11-06, [run 42172564187](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42172564187): 6 of 6 passed |
+| 1 | 0.51.0 | 22, 24 (CI); 26 (locally) | not yet run on this step |
 
 ## The upstream sample's README
 
