@@ -324,7 +324,7 @@ trace includes what each step typed.
 | Step | `@udibo/oauth2` | Node.js | Last live run |
 | --- | --- | --- | --- |
 | 0 | not used | 22, 24 (CI); 26 (locally) | 2026-11-06, [run 42172564187](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42172564187): 6 of 6 passed |
-| 1 | 0.51.0 | 22, 24 (CI); 26 (locally) | not yet run on this step |
+| 1 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-08, [run 42560839171](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42560839171): 7 of 7 passed |
 
 ## The upstream sample's README
 
