@@ -15,7 +15,7 @@ exactly what that step changes.
 | --- | --- |
 | `step-0-upstream` | The upstream sample: `@auth0/auth0-react` and Auth0 |
 | `step-1-udibo-package` | `@udibo/oauth2`, still against Auth0 |
-| `step-2-udibo-idp` | `@udibo/oauth2` against Udibo's hosted identity service _(not yet published)_ |
+| `step-2-udibo-idp` | `@udibo/oauth2` against Udibo's hosted identity service |
 | `step-3-user-import` | Users imported from Auth0 into Udibo _(not yet published)_ |
 
 ## Step 0: the upstream sample
@@ -176,10 +176,106 @@ development tools with no fixed release in their major versions: jest's
 `glob`, `minimatch`, `test-exclude` and `deepmerge`, and nodemon's
 `minimatch`. `npm audit --omit=dev` reports none.
 
+## Step 2: sign in through Udibo
+
+Step 2 points the app at a Udibo tenant. **No line of the app or the API
+changes**: both read their issuer, client and audience from `OAUTH_ISSUER`,
+`OAUTH_CLIENT_ID` and `OAUTH_AUDIENCE` since step 1, so the move is those three
+values:
+
+| Setting | Auth0 (step 1) | Udibo (step 2) |
+| --- | --- | --- |
+| `OAUTH_ISSUER` | `https://<tenant>.us.auth0.com/` | The tenant's issuer, such as `https://<tenant id>.udibo.com`, with no trailing slash |
+| `OAUTH_CLIENT_ID` | The Auth0 application's Client ID | The Udibo application's client ID |
+| `OAUTH_AUDIENCE` | The Auth0 API's Identifier | The Udibo application's access-token audience, `https://migrate-from-auth0-react.example/api` |
+
+The rest of the step is the test harness, the live workflow and this README.
+
+### What Udibo needs to be configured with
+
+See [Set up the Udibo tenant](#set-up-the-udibo-tenant) for the steps. Compared
+with Auth0's list in step 1:
+
+- **The audience belongs to the application.** Udibo issues JWT access tokens
+  for the audience set on the application (RFC 9068 `at+jwt`, ES256, with
+  `client_id` and `jti`). It ignores the `audience` parameter the client still
+  sends for Auth0. There is no separate API object to authorize the
+  application for.
+- **The callback and logout URLs** are the application's redirect URI and
+  post-logout redirect URI, `http://localhost:3000`, on a **Development**
+  application, which is what allows `http` on `localhost`.
+- **Cross-origin calls** need no setting. Udibo answers CORS on its discovery
+  documents and JWKS for any origin. On `/api/oauth2/token`, `/userinfo` and
+  `/revoke` it answers only an origin registered as a redirect URI of a
+  **public** application in the same tenant. A confidential client's origins
+  get no CORS.
+- **Logout** uses the advertised `end_session_endpoint`
+  (`/api/oauth2/end_session`), with the same `id_token_hint` and
+  `post_logout_redirect_uri` as at Auth0.
+- **RFC 9207:** Udibo sends `iss` in the authorization response and
+  advertises it, so the client checks it. Auth0 sent none.
+- **Consent:** a first-party application gets no consent page.
+
+### Findings
+
+- **Udibo did not answer CORS for a browser-only client until 2026-11-09.**
+  Before udibo/udibo#3280, none of the discovery documents, `/token`,
+  `/userinfo` or `/revoke` sent `Access-Control-Allow-Origin`, and every
+  preflight got 404. A single-page app could not discover the issuer or
+  redeem its code, though Udibo's documentation listed browser-only public
+  clients as supported. The fix answers CORS as described above. This step
+  was checked against an in-process Udibo at that commit, from
+  `http://localhost:3000` with a public Development application:
+  - discovery, the code exchange, UserInfo and revocation all succeed, with
+    the app's origin named and no credentials allowed;
+  - a preflight asking to send `Authorization` to `/token` is refused;
+  - an unregistered origin gets no CORS answer.
+- **A username-only user has no email.** Udibo's test user signs in with a
+  username, so its ID token and UserInfo carry `preferred_username` and no
+  `email`. The profile page's heading shows the `email` claim and is empty
+  for this user; the app is unchanged, and the profile test compares
+  `preferred_username` at Udibo instead.
+- **The API needs no change.** `express-oauth2-jwt-bearer` checks Udibo's
+  ES256 `at+jwt` tokens against the issuer's JWKS as it checked Auth0's.
+  Moving the API to `@udibo/oauth2`'s `JwksTokenReader`, which step 1 could
+  not do against Auth0's token profile, is now possible but is not
+  configuration, so it is left out of this step.
+
+### The client switch-over
+
+Udibo does not import Auth0's client IDs or credentials. Register a new
+public application in Udibo, as in [Set up the Udibo
+tenant](#set-up-the-udibo-tenant), and deploy the app with the three settings
+above. During the move:
+
+1. **The API accepts tokens from both issuers.** One
+   `express-oauth2-jwt-bearer` middleware checks one issuer, so mount one per
+   issuer and accept a request either one accepts, or run a second instance of
+   the API for the Udibo client.
+2. **Clients move one at a time.** This example has one client: the
+   single-page app.
+3. **Auth0 is turned off** once the last client has moved and its tokens have
+   expired. A single-page app holds no refresh token from Auth0 (step 1
+   requested none), so that is the access-token lifetime, 24 hours by default.
+
+Until step 3 imports the users, an Auth0 user has no Udibo account and cannot
+sign in through Udibo.
+
+### Live tests at step 2
+
+The **Live tenant** workflow now runs the browser tests against both tenants,
+one job each. The Udibo job is this step's evidence. The Auth0 job stays as
+the rollback check: the same code, configured for Auth0, still signs in, so
+the move can be reverted by configuration while users and clients are still
+moving. It can be dropped once step 3 has retired the Auth0 tenant. Each job
+skips, and says so, until its own secrets are set.
+
 ## Run it
 
-Requirements: Node.js 22.12 or later, and an Auth0 tenant set up as in
-[Set up the Auth0 tenant](#set-up-the-auth0-tenant).
+Requirements: Node.js 22.12 or later, and a Udibo tenant set up as in
+[Set up the Udibo tenant](#set-up-the-udibo-tenant) (or, to run it as step 1
+did, an Auth0 tenant set up as in [Set up the Auth0
+tenant](#set-up-the-auth0-tenant)).
 
 ```sh
 npm ci
@@ -187,9 +283,11 @@ cp .env.example .env.local   # then fill in OAUTH_ISSUER, OAUTH_CLIENT_ID and OA
 npm run dev                  # the app on http://localhost:3000, the API on :3001
 ```
 
-For Auth0, `OAUTH_ISSUER` is `https://<your tenant's domain>/`, with the
-trailing slash, `OAUTH_CLIENT_ID` the application's Client ID, and
-`OAUTH_AUDIENCE` the API's Identifier.
+For Udibo, `OAUTH_ISSUER` is the tenant's issuer, `OAUTH_CLIENT_ID` the
+application's client ID, and `OAUTH_AUDIENCE` its access-token audience. For
+Auth0, `OAUTH_ISSUER` is `https://<your tenant's domain>/`, with the trailing
+slash, `OAUTH_CLIENT_ID` the application's Client ID, and `OAUTH_AUDIENCE` the
+API's Identifier.
 
 `npm run prod` serves the built app (`npm run build` first) with `server.js`
 instead of Vite's development server.
@@ -200,6 +298,7 @@ instead of Vite's development server.
 npm test                 # upstream's component tests (jest)
 npm run test:behavior    # builds the app, then tests both servers; no tenant needed
 npm run test:e2e         # signs in through the local identity provider in Chromium
+E2E_PROVIDER=udibo npm run test:e2e   # the same tests, through the Udibo tenant
 E2E_PROVIDER=auth0 npm run test:e2e   # the same tests, through the Auth0 tenant
 ```
 
@@ -218,7 +317,7 @@ filled `.env.local` cannot change what it tests:
 | App server | Every path answers with the built page; the built script is served; no Content-Security-Policy |
 
 `npm run test:e2e` builds the app, starts it and the API, and signs in in
-Chromium through one of two authorization servers, chosen by `E2E_PROVIDER`:
+Chromium through one of three authorization servers, chosen by `E2E_PROVIDER`:
 
 - **By default, `@udibo/oauth2`'s local identity provider** (`udibo-oauth2 idp
   dev`), seeded from `e2e/idp.json` with a synthetic user and two clients, and
@@ -229,6 +328,10 @@ Chromium through one of two authorization servers, chosen by `E2E_PROVIDER`:
   them for the app's origin and passes everything else through. The app runs
   on `http://127.0.0.1:3000` here, or on `E2E_APP_PORT` and `E2E_API_PORT`
   when 3000 and 3001 are taken.
+- **With `E2E_PROVIDER=udibo`, the Udibo tenant**, on ports 3000 and 3001,
+  the application's registered URL. It reads `UDIBO_ISSUER`,
+  `UDIBO_CLIENT_ID`, `UDIBO_AUDIENCE`, `UDIBO_TEST_USERNAME` and
+  `UDIBO_TEST_PASSWORD`, and refuses to start without them.
 - **With `E2E_PROVIDER=auth0`, the Auth0 tenant**, on upstream's ports 3000
   and 3001, because Auth0 returns the browser only to a registered URL. It
   reads `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_AUDIENCE`,
@@ -238,29 +341,67 @@ Chromium through one of two authorization servers, chosen by `E2E_PROVIDER`:
 The tests compare tenant values in code, so a failure says what differed
 without printing them, and fail at once, with the provider's `error` and
 `error_description`, when it sends the browser back to the app with an error
-instead of showing its login page. Nothing stands in for either provider:
+instead of showing its login page. Nothing stands in for any provider:
 
 | Test | What it pins |
 | --- | --- |
 | Signed out | The home page offers to log in; `/profile` sends the browser to the provider's login page |
 | The sign-in request | `response_type=code` (no `response_mode`: `query` is the default), S256 PKCE, `state`, the `openid profile email` scopes, the API's audience, and the app's origin as `redirect_uri` |
 | A wrong password | The user stays at the provider, signed out |
-| Profile | After signing in, the profile page shows the test user's email and the provider's subject (`auth0\|…` at Auth0) |
+| Profile | After signing in, the profile shows the test user (its `email`, or at Udibo, whose test user has none, its `preferred_username`) and the provider's subject (`auth0\|…` at Auth0, a UUID at Udibo); where the user has an email, the page's heading shows it |
 | The API | Accepts the access token the app sends, a JWT from the provider for the API's audience and this client, and refuses it with 401 `invalid_token` once its signature is altered |
-| Logging out | Returns to the app signed out, and the next protected page asks the provider for the password again. The local provider advertises no `end_session_endpoint` ([udibo/oauth2#177](https://github.com/udibo/oauth2/issues/177)), so there only the local sign-out is checked: the redirect to the end-session endpoint, with `id_token_hint` and `post_logout_redirect_uri`, is exercised only by the Auth0 run |
-| Another API's token | A client-credentials token from the same provider for `https://other-api.example` gets 401 `invalid_token`. At Auth0 it needs `AUTH0_OTHER_AUDIENCE_CLIENT_ID` and `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET`, and skips alone without them |
+| Logging out | Returns to the app signed out, and the next protected page asks the provider for the password again. The local provider advertises no `end_session_endpoint` ([udibo/oauth2#177](https://github.com/udibo/oauth2/issues/177)), so there only the local sign-out is checked: the redirect to the end-session endpoint, with `id_token_hint` and `post_logout_redirect_uri`, is exercised only by the Auth0 and Udibo runs |
+| Another API's token | A client-credentials token from the same provider for `https://other-api.example` gets 401 `invalid_token`. At Auth0 it needs `AUTH0_OTHER_AUDIENCE_CLIENT_ID` and `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET`, at Udibo `UDIBO_OTHER_AUDIENCE_CLIENT_ID` and `UDIBO_OTHER_AUDIENCE_CLIENT_SECRET`, and skips alone without them |
 
 CI runs `npm test`, `npm run test:behavior` and `npm run test:e2e` (through
 the local identity provider) on Node 22 and 24 for every push and pull
 request, with no secrets. The **Live tenant** workflow runs the browser tests
-against the Auth0 tenant every Monday and on demand, with the pinned
-`@udibo/oauth2`. On the other days it checks npm for a newer `@udibo/oauth2`
-and, the first day one appears, installs and tests it, so a release that
-breaks sign-in through Auth0 shows up the day it is published. A release that
-passed is recorded in the workflow's cache and not tested again; one that
-failed is tested again the next day. When npm cannot be reached the job says
-so and tests the pinned release. It reports that it skipped while the secrets
-are missing.
+against the Udibo tenant and the Auth0 tenant, one job each, every Monday and
+on demand, with the pinned `@udibo/oauth2`. On the other days it checks npm for a newer `@udibo/oauth2`
+and, the first day one appears, installs and tests it against each tenant,
+so a release that breaks sign-in shows up the day it is published. A release
+that passed against a tenant is recorded in the workflow's cache and not
+tested there again; one that failed is tested again the next day. When npm
+cannot be reached the job says so and tests the pinned release. Each job
+reports that it skipped while its tenant's secrets are missing.
+
+## Set up the Udibo tenant
+
+Use a Udibo test tenant that holds synthetic users only. In the tenant's
+dashboard:
+
+1. **Application.** Create an application:
+   - **Public** (no client secret), **first-party**, environment
+     **Development**, so `http://localhost` is allowed.
+   - Grant: **Authorization code** (add **Refresh token** for session renewal;
+     the tests do not need it).
+   - Redirect URI and post-logout redirect URI: `http://localhost:3000`.
+   - Access tokens: **JWT**, audience
+     `https://migrate-from-auth0-react.example/api`.
+2. **Test user.** A synthetic user who signs in with a username and password,
+   with no second factor.
+3. **No extra sign-in steps.** No second factor for the test user, and bot
+   protection (CAPTCHA) off for the tenant: either stops an automated sign-in.
+   Each run makes one wrong-password attempt, then signs in.
+4. **A second audience, for the audience test.** A machine application with
+   the **client credentials** grant and JWT access tokens for
+   `https://other-api.example`. Its client ID and secret are the two optional
+   secrets below.
+
+Then add these **repository secrets**:
+
+| Secret | Value |
+| --- | --- |
+| `UDIBO_ISSUER` | The tenant's issuer, as its discovery document names it, such as `https://<tenant id>.udibo.com` |
+| `UDIBO_CLIENT_ID` | The application's client ID |
+| `UDIBO_AUDIENCE` | `https://migrate-from-auth0-react.example/api` |
+| `UDIBO_TEST_USERNAME` | The test user's username |
+| `UDIBO_TEST_PASSWORD` | The test user's password |
+| `UDIBO_OTHER_AUDIENCE_CLIENT_ID` | Optional: the machine application's client ID |
+| `UDIBO_OTHER_AUDIENCE_CLIENT_SECRET` | Optional: its secret |
+
+For a local run against the tenant, put the same names in `.env.local` and run
+`E2E_PROVIDER=udibo npm run test:e2e`.
 
 ## Set up the Auth0 tenant
 
@@ -328,6 +469,7 @@ trace includes what each step typed.
 | --- | --- | --- | --- |
 | 0 | not used | 22, 24 (CI); 26 (locally) | 2026-11-06, [run 42172564187](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42172564187): 6 of 6 passed |
 | 1 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-08, [run 42560839171](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42560839171): 7 of 7 passed |
+| 2 | 0.51.0 | 22, 24 (CI); 26 (locally) | Udibo: not yet run, no tenant secrets set. Auth0: as step 1 |
 
 ## The upstream sample's README
 
