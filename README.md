@@ -247,7 +247,7 @@ instead of showing its login page. Nothing stands in for either provider:
 | A wrong password | The user stays at the provider, signed out |
 | Profile | After signing in, the profile page shows the test user's email and the provider's subject (`auth0\|…` at Auth0) |
 | The API | Accepts the access token the app sends, a JWT from the provider for the API's audience and this client, and refuses it with 401 `invalid_token` once its signature is altered |
-| Logging out | Returns to the app signed out, and the next protected page asks the provider for the password again. The local provider advertises no `end_session_endpoint` ([udibo/oauth2#177](https://github.com/udibo/oauth2/issues/177)), so there only the local sign-out is checked |
+| Logging out | Returns to the app signed out, and the next protected page asks the provider for the password again. The local provider advertises no `end_session_endpoint` ([udibo/oauth2#177](https://github.com/udibo/oauth2/issues/177)), so there only the local sign-out is checked: the redirect to the end-session endpoint, with `id_token_hint` and `post_logout_redirect_uri`, is exercised only by the Auth0 run |
 | Another API's token | A client-credentials token from the same provider for `https://other-api.example` gets 401 `invalid_token`. At Auth0 it needs `AUTH0_OTHER_AUDIENCE_CLIENT_ID` and `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET`, and skips alone without them |
 
 CI runs `npm test`, `npm run test:behavior` and `npm run test:e2e` (through
@@ -255,9 +255,12 @@ the local identity provider) on Node 22 and 24 for every push and pull
 request, with no secrets. The **Live tenant** workflow runs the browser tests
 against the Auth0 tenant every Monday and on demand, with the pinned
 `@udibo/oauth2`. On the other days it checks npm for a newer `@udibo/oauth2`
-and, when there is one, installs and tests it, so a release that breaks
-sign-in through Auth0 shows up the day it is published. It reports that it
-skipped while the secrets are missing.
+and, the first day one appears, installs and tests it, so a release that
+breaks sign-in through Auth0 shows up the day it is published. A release that
+passed is recorded in the workflow's cache and not tested again; one that
+failed is tested again the next day. When npm cannot be reached the job says
+so and tests the pinned release. It reports that it skipped while the secrets
+are missing.
 
 ## Set up the Auth0 tenant
 
