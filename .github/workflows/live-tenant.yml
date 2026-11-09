@@ -1,9 +1,11 @@
 name: Live tenant
 
-# Runs the browser tests against the Auth0 development tenant. The tenant
-# holds synthetic users only. Every value comes from the repository's secrets;
-# see "Test against an Auth0 tenant" in the README. Without them the job
-# reports that it skipped and passes.
+# Runs the browser tests against the Udibo test tenant the app moves to at
+# step 2, and against the Auth0 development tenant it moves from, one job
+# each. The tenants hold synthetic users only. Every value comes from the
+# repository's secrets; see "Set up the Udibo tenant" and "Set up the Auth0
+# tenant" in the README. A job whose secrets are missing reports that it
+# skipped and passes.
 #
 # The weekly run (Mondays) and a manual run test the pinned @udibo/oauth2. On
 # the other days the job runs only when npm names a newer @udibo/oauth2 that
@@ -24,27 +26,42 @@ concurrency:
 
 jobs:
   test:
-    name: Test against the Auth0 tenant
+    name: Test against the ${{ matrix.provider }} tenant
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [udibo, auth0]
     steps:
       # The secrets reach only this step and the test step, never npm ci's
       # install scripts.
       - name: Check the tenant is configured
         id: configured
         env:
-          AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
-          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
-          AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}
-          AUTH0_TEST_USERNAME: ${{ secrets.AUTH0_TEST_USERNAME }}
-          AUTH0_TEST_PASSWORD: ${{ secrets.AUTH0_TEST_PASSWORD }}
+          PROVIDER: ${{ matrix.provider }}
+          AUTH0_DOMAIN: ${{ matrix.provider == 'auth0' && secrets.AUTH0_DOMAIN || '' }}
+          AUTH0_CLIENT_ID: ${{ matrix.provider == 'auth0' && secrets.AUTH0_CLIENT_ID || '' }}
+          AUTH0_AUDIENCE: ${{ matrix.provider == 'auth0' && secrets.AUTH0_AUDIENCE || '' }}
+          AUTH0_TEST_USERNAME: ${{ matrix.provider == 'auth0' && secrets.AUTH0_TEST_USERNAME || '' }}
+          AUTH0_TEST_PASSWORD: ${{ matrix.provider == 'auth0' && secrets.AUTH0_TEST_PASSWORD || '' }}
+          UDIBO_ISSUER: ${{ matrix.provider == 'udibo' && secrets.UDIBO_ISSUER || '' }}
+          UDIBO_CLIENT_ID: ${{ matrix.provider == 'udibo' && secrets.UDIBO_CLIENT_ID || '' }}
+          UDIBO_AUDIENCE: ${{ matrix.provider == 'udibo' && secrets.UDIBO_AUDIENCE || '' }}
+          UDIBO_TEST_USERNAME: ${{ matrix.provider == 'udibo' && secrets.UDIBO_TEST_USERNAME || '' }}
+          UDIBO_TEST_PASSWORD: ${{ matrix.provider == 'udibo' && secrets.UDIBO_TEST_PASSWORD || '' }}
         run: |
+          if [ "$PROVIDER" = "udibo" ]; then
+            required="UDIBO_ISSUER UDIBO_CLIENT_ID UDIBO_AUDIENCE UDIBO_TEST_USERNAME UDIBO_TEST_PASSWORD"
+          else
+            required="AUTH0_DOMAIN AUTH0_CLIENT_ID AUTH0_AUDIENCE AUTH0_TEST_USERNAME AUTH0_TEST_PASSWORD"
+          fi
           missing=""
-          for name in AUTH0_DOMAIN AUTH0_CLIENT_ID AUTH0_AUDIENCE AUTH0_TEST_USERNAME AUTH0_TEST_PASSWORD; do
+          for name in $required; do
             if [ -z "${!name}" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            echo "::notice title=Live tenant skipped::No Auth0 tenant is configured (missing:$missing). Add the AUTH0_* repository secrets listed in the README."
+            echo "::notice title=Live tenant skipped ($PROVIDER)::No $PROVIDER tenant is configured (missing:$missing). Add the repository secrets listed in the README."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -86,7 +103,7 @@ jobs:
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: .oauth2-release-tested
-          key: live-tenant-udibo-oauth2-${{ steps.release.outputs.candidate }}
+          key: live-tenant-${{ matrix.provider }}-udibo-oauth2-${{ steps.release.outputs.candidate }}
           lookup-only: true
       - name: Test the newer release unless it already passed
         id: candidate
@@ -94,9 +111,10 @@ jobs:
         env:
           VERSION: ${{ steps.release.outputs.candidate }}
           HIT: ${{ steps.tested.outputs.cache-hit }}
+          PROVIDER: ${{ matrix.provider }}
         run: |
           if [ "$HIT" = "true" ]; then
-            echo "@udibo/oauth2 $VERSION already passed against the tenant; nothing to test today."
+            echo "@udibo/oauth2 $VERSION already passed against the $PROVIDER tenant; nothing to test today."
             echo "run=false" >> "$GITHUB_OUTPUT"
           else
             echo "::notice title=New @udibo/oauth2::Testing $VERSION, newer than the pinned release."
@@ -113,15 +131,22 @@ jobs:
       - if: steps.release.outputs.run == 'true' || steps.candidate.outputs.run == 'true'
         run: npm run test:e2e
         env:
-          E2E_PROVIDER: auth0
-          AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
-          AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
-          AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}
-          AUTH0_TEST_USERNAME: ${{ secrets.AUTH0_TEST_USERNAME }}
-          AUTH0_TEST_PASSWORD: ${{ secrets.AUTH0_TEST_PASSWORD }}
+          E2E_PROVIDER: ${{ matrix.provider }}
+          AUTH0_DOMAIN: ${{ matrix.provider == 'auth0' && secrets.AUTH0_DOMAIN || '' }}
+          AUTH0_CLIENT_ID: ${{ matrix.provider == 'auth0' && secrets.AUTH0_CLIENT_ID || '' }}
+          AUTH0_AUDIENCE: ${{ matrix.provider == 'auth0' && secrets.AUTH0_AUDIENCE || '' }}
+          AUTH0_TEST_USERNAME: ${{ matrix.provider == 'auth0' && secrets.AUTH0_TEST_USERNAME || '' }}
+          AUTH0_TEST_PASSWORD: ${{ matrix.provider == 'auth0' && secrets.AUTH0_TEST_PASSWORD || '' }}
+          UDIBO_ISSUER: ${{ matrix.provider == 'udibo' && secrets.UDIBO_ISSUER || '' }}
+          UDIBO_CLIENT_ID: ${{ matrix.provider == 'udibo' && secrets.UDIBO_CLIENT_ID || '' }}
+          UDIBO_AUDIENCE: ${{ matrix.provider == 'udibo' && secrets.UDIBO_AUDIENCE || '' }}
+          UDIBO_TEST_USERNAME: ${{ matrix.provider == 'udibo' && secrets.UDIBO_TEST_USERNAME || '' }}
+          UDIBO_TEST_PASSWORD: ${{ matrix.provider == 'udibo' && secrets.UDIBO_TEST_PASSWORD || '' }}
           # Optional: the audience test skips without them; the rest run.
-          AUTH0_OTHER_AUDIENCE_CLIENT_ID: ${{ secrets.AUTH0_OTHER_AUDIENCE_CLIENT_ID }}
-          AUTH0_OTHER_AUDIENCE_CLIENT_SECRET: ${{ secrets.AUTH0_OTHER_AUDIENCE_CLIENT_SECRET }}
+          AUTH0_OTHER_AUDIENCE_CLIENT_ID: ${{ matrix.provider == 'auth0' && secrets.AUTH0_OTHER_AUDIENCE_CLIENT_ID || '' }}
+          AUTH0_OTHER_AUDIENCE_CLIENT_SECRET: ${{ matrix.provider == 'auth0' && secrets.AUTH0_OTHER_AUDIENCE_CLIENT_SECRET || '' }}
+          UDIBO_OTHER_AUDIENCE_CLIENT_ID: ${{ matrix.provider == 'udibo' && secrets.UDIBO_OTHER_AUDIENCE_CLIENT_ID || '' }}
+          UDIBO_OTHER_AUDIENCE_CLIENT_SECRET: ${{ matrix.provider == 'udibo' && secrets.UDIBO_OTHER_AUDIENCE_CLIENT_SECRET || '' }}
       - name: Record that this release passed
         if: steps.candidate.outputs.run == 'true'
         env:
@@ -131,4 +156,4 @@ jobs:
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: .oauth2-release-tested
-          key: live-tenant-udibo-oauth2-${{ steps.release.outputs.candidate }}
+          key: live-tenant-${{ matrix.provider }}-udibo-oauth2-${{ steps.release.outputs.candidate }}
