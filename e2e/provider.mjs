@@ -84,7 +84,7 @@ function udibo() {
       password: 'input[name="password"]',
       submit: 'form:has(input[name="intent"][value="sign-in"]) button[type="submit"]',
       accept: 'button[name="consent"][value="approve"]',
-      error: '[role="alert"]',
+      error: 'form:has(input[name="intent"][value="sign-in"]) [role="alert"]',
     },
   };
 }
