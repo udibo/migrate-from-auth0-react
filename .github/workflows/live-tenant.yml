@@ -6,9 +6,9 @@ name: Live tenant
 # reports that it skipped and passes.
 #
 # The weekly run (Mondays) and a manual run test the pinned @udibo/oauth2. On
-# the other days the job runs only when npm names a newer @udibo/oauth2, and
-# tests that release, so a release that breaks sign-in through Auth0 shows up
-# the day it is published.
+# the other days the job runs only when npm names a newer @udibo/oauth2 that
+# has not yet passed here, and tests that release, so a release that breaks
+# sign-in through Auth0 shows up the day it is published.
 
 on:
   workflow_dispatch:
@@ -65,27 +65,52 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           pinned=$(node -p 'require("./package.json").dependencies["@udibo/oauth2"]')
-          latest=$(npm view @udibo/oauth2 version)
           if [ "$EVENT" != "schedule" ] || [ "$(date -u +%u)" = "1" ]; then
             echo "Testing the pinned @udibo/oauth2 $pinned."
             echo "run=true" >> "$GITHUB_OUTPUT"
-          elif [ "$latest" != "$pinned" ]; then
-            echo "::notice title=New @udibo/oauth2::Testing $latest, newer than the pinned $pinned."
-            echo "install=$latest" >> "$GITHUB_OUTPUT"
+          elif ! latest=$(npm view @udibo/oauth2 version) || [ -z "$latest" ]; then
+            echo "::warning title=npm unreachable::Could not read the latest @udibo/oauth2 from npm; testing the pinned $pinned instead."
             echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$latest" != "$pinned" ]; then
+            echo "candidate=$latest" >> "$GITHUB_OUTPUT"
           else
             echo "No @udibo/oauth2 release newer than $pinned; nothing to test today."
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
-      - if: steps.release.outputs.run == 'true'
-        run: npm ci
-      - if: steps.release.outputs.install != ''
+      # A release that passed leaves a cache entry named for it, so the daily
+      # check tests each new release once. A failed run saves nothing, so it
+      # tries again the next day.
+      - name: Look up whether this release already passed
+        id: tested
+        if: steps.release.outputs.candidate != ''
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .oauth2-release-tested
+          key: live-tenant-udibo-oauth2-${{ steps.release.outputs.candidate }}
+          lookup-only: true
+      - name: Test the newer release unless it already passed
+        id: candidate
+        if: steps.release.outputs.candidate != ''
         env:
-          VERSION: ${{ steps.release.outputs.install }}
+          VERSION: ${{ steps.release.outputs.candidate }}
+          HIT: ${{ steps.tested.outputs.cache-hit }}
+        run: |
+          if [ "$HIT" = "true" ]; then
+            echo "@udibo/oauth2 $VERSION already passed against the tenant; nothing to test today."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=New @udibo/oauth2::Testing $VERSION, newer than the pinned release."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.release.outputs.run == 'true' || steps.candidate.outputs.run == 'true'
+        run: npm ci
+      - if: steps.candidate.outputs.run == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.candidate }}
         run: npm install --no-save "@udibo/oauth2@$VERSION"
-      - if: steps.release.outputs.run == 'true'
+      - if: steps.release.outputs.run == 'true' || steps.candidate.outputs.run == 'true'
         run: npx playwright install --with-deps chromium
-      - if: steps.release.outputs.run == 'true'
+      - if: steps.release.outputs.run == 'true' || steps.candidate.outputs.run == 'true'
         run: npm run test:e2e
         env:
           E2E_PROVIDER: auth0
@@ -97,3 +122,13 @@ jobs:
           # Optional: the audience test skips without them; the rest run.
           AUTH0_OTHER_AUDIENCE_CLIENT_ID: ${{ secrets.AUTH0_OTHER_AUDIENCE_CLIENT_ID }}
           AUTH0_OTHER_AUDIENCE_CLIENT_SECRET: ${{ secrets.AUTH0_OTHER_AUDIENCE_CLIENT_SECRET }}
+      - name: Record that this release passed
+        if: steps.candidate.outputs.run == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.candidate }}
+        run: echo "$VERSION" > .oauth2-release-tested
+      - if: steps.candidate.outputs.run == 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
+        with:
+          path: .oauth2-release-tested
+          key: live-tenant-udibo-oauth2-${{ steps.release.outputs.candidate }}
