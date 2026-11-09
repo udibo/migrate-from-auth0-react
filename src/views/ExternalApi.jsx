@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import Button from "react-bootstrap/Button";
 import Alert from "react-bootstrap/Alert";
 import Highlight from "../components/Highlight";
-import { useAuth0, withAuthenticationRequired } from "@auth0/auth0-react";
+import { RequireAuth, useDirectClient, useOAuth2 } from "@udibo/oauth2/react";
 import { getConfig } from "../config";
 import Loading from "../components/Loading";
 
@@ -15,46 +15,31 @@ export const ExternalApiComponent = () => {
     error: null,
   });
 
-  const { getAccessTokenSilently, loginWithPopup, getAccessTokenWithPopup } =
-    useAuth0();
+  const client = useDirectClient();
+  const { login } = useOAuth2();
 
+  // @udibo/oauth2 has no pop-up flow, so both recoveries sign in again by
+  // redirect and come back to this page.
   const handleConsent = async () => {
-    try {
-      await getAccessTokenWithPopup();
-      setState({
-        ...state,
-        error: null,
-      });
-    } catch (error) {
-      setState({
-        ...state,
-        error: error.error,
-      });
-    }
-
-    await callApi();
+    const { url } = await client.login({ prompt: "consent", returnTo: "/external-api" });
+    window.location.assign(url);
   };
 
   const handleLoginAgain = async () => {
-    try {
-      await loginWithPopup();
-      setState({
-        ...state,
-        error: null,
-      });
-    } catch (error) {
-      setState({
-        ...state,
-        error: error.error,
-      });
-    }
+    await login({ returnTo: "/external-api" });
+  };
 
-    await callApi();
+  // An access token that has expired with no refresh token to renew it
+  // (invalid_grant) needs a new sign-in, which Auth0's SDK reported as
+  // login_required.
+  const errorCode = (error) => {
+    const code = error?.extensions?.error;
+    return code === "invalid_grant" ? "login_required" : code;
   };
 
   const callApi = async () => {
     try {
-      const token = await getAccessTokenSilently();
+      const token = await client.getAccessToken();
 
       const response = await fetch(`${apiOrigin}/api/external`, {
         headers: {
@@ -72,7 +57,7 @@ export const ExternalApiComponent = () => {
     } catch (error) {
       setState({
         ...state,
-        error: error.error,
+        error: errorCode(error),
       });
     }
   };
@@ -192,6 +177,10 @@ export const ExternalApiComponent = () => {
   );
 };
 
-export default withAuthenticationRequired(ExternalApiComponent, {
-  onRedirecting: () => <Loading />,
-});
+const ExternalApi = () => (
+  <RequireAuth fallback={<Loading />}>
+    <ExternalApiComponent />
+  </RequireAuth>
+);
+
+export default ExternalApi;

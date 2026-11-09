@@ -23,7 +23,7 @@ export async function freePort() {
  * filled .env.local cannot reach a test.
  */
 export const UNSET = Object.fromEntries(
-  ["AUTH0_DOMAIN", "AUTH0_CLIENT_ID", "AUTH0_AUDIENCE", "API_BASE_URL", "APP_BASE_URL", "API_PORT", "SERVER_PORT", "NODE_ENV"].map(
+  ["OAUTH_ISSUER", "OAUTH_CLIENT_ID", "OAUTH_AUDIENCE", "API_BASE_URL", "APP_BASE_URL", "API_PORT", "SERVER_PORT", "NODE_ENV"].map(
     (name) => [name, ""],
   ),
 );
