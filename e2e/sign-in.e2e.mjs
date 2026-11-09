@@ -78,14 +78,14 @@ test("signed out, the home page offers to log in and the protected pages send th
   await page.goto("/profile");
   await reachProvider(page);
   const authorize = new URL(page.url());
-  expect(authorize.pathname).toMatch(/^\/u\/login|^\/authorize/);
+  expect(authorize.pathname).toMatch(provider.loginPathPattern);
   await expect(page.locator(provider.page.username)).toBeVisible();
 });
 
 test("the sign-in request is an authorization-code request with PKCE, for the API's audience", async ({ page }) => {
   const authorizeRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
-    return atProvider(url) && url.pathname === "/authorize";
+    return atProvider(url) && url.pathname === provider.authorizePath;
   });
   await page.goto("/");
   await page.locator("#qsLoginBtn").first().click();
@@ -117,10 +117,13 @@ test("a wrong password keeps the user at the provider, signed out", async ({ pag
 test("signing in shows the user's profile", async ({ page }) => {
   await signIn(page);
   await openProfile(page);
-  const shownEmail = await page.locator(".profile-header p.lead").innerText();
-  expect(shownEmail === provider.username, "the page shows the test user's email").toBe(true);
   const profile = JSON.parse(await page.locator("pre code").first().innerText());
-  expect(profile.email === provider.username, "the profile is the test user's").toBe(true);
+  expect(profile[provider.profileClaim] === provider.username, "the profile is the test user's").toBe(true);
+  // The page's heading shows the email claim, which a username-only user lacks.
+  if (provider.profileClaim === "email") {
+    const shownEmail = await page.locator(".profile-header p.lead").innerText();
+    expect(shownEmail === provider.username, "the page shows the test user's email").toBe(true);
+  }
   expect(provider.subjectPattern.test(profile.sub), "the profile's subject is the provider's user id").toBe(true);
 });
 
