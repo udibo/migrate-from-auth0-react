@@ -4,11 +4,16 @@ name: Live tenant
 # holds synthetic users only. Every value comes from the repository's secrets;
 # see "Test against an Auth0 tenant" in the README. Without them the job
 # reports that it skipped and passes.
+#
+# The weekly run (Mondays) and a manual run test the pinned @udibo/oauth2. On
+# the other days the job runs only when npm names a newer @udibo/oauth2, and
+# tests that release, so a release that breaks sign-in through Auth0 shows up
+# the day it is published.
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "17 6 * * 1"
+    - cron: "17 6 * * *"
 
 permissions:
   contents: read
@@ -23,8 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # The secrets reach only these two steps, never npm ci's install
-      # scripts.
+      # The secrets reach only this step and the test step, never npm ci's
+      # install scripts.
       - name: Check the tenant is configured
         id: configured
         env:
@@ -53,13 +58,37 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - if: steps.configured.outputs.ready == 'true'
+      - name: Choose the @udibo/oauth2 release to test
+        id: release
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          pinned=$(node -p 'require("./package.json").dependencies["@udibo/oauth2"]')
+          latest=$(npm view @udibo/oauth2 version)
+          if [ "$EVENT" != "schedule" ] || [ "$(date -u +%u)" = "1" ]; then
+            echo "Testing the pinned @udibo/oauth2 $pinned."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$latest" != "$pinned" ]; then
+            echo "::notice title=New @udibo/oauth2::Testing $latest, newer than the pinned $pinned."
+            echo "install=$latest" >> "$GITHUB_OUTPUT"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No @udibo/oauth2 release newer than $pinned; nothing to test today."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.release.outputs.run == 'true'
         run: npm ci
-      - if: steps.configured.outputs.ready == 'true'
+      - if: steps.release.outputs.install != ''
+        env:
+          VERSION: ${{ steps.release.outputs.install }}
+        run: npm install --no-save "@udibo/oauth2@$VERSION"
+      - if: steps.release.outputs.run == 'true'
         run: npx playwright install --with-deps chromium
-      - if: steps.configured.outputs.ready == 'true'
+      - if: steps.release.outputs.run == 'true'
         run: npm run test:e2e
         env:
+          E2E_PROVIDER: auth0
           AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
           AUTH0_CLIENT_ID: ${{ secrets.AUTH0_CLIENT_ID }}
           AUTH0_AUDIENCE: ${{ secrets.AUTH0_AUDIENCE }}

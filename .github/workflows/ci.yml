@@ -13,7 +13,7 @@ jobs:
   test:
     name: Test on Node ${{ matrix.node }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -29,6 +29,10 @@ jobs:
       - run: npm ci
       # Upstream's component tests (jest, jsdom).
       - run: npm test
-      # Builds the app, then tests both servers with no Auth0 tenant. The
-      # sign-in tests need the tenant and run in live-tenant.yml.
+      # Builds the app, then tests both servers with no identity provider.
       - run: npm run test:behavior
+      # Signs in through @udibo/oauth2's local identity provider, seeded from
+      # e2e/idp.json, with no secrets. live-tenant.yml runs the same tests
+      # against the Auth0 tenant.
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
