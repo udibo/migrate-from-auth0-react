@@ -8,19 +8,19 @@ import { freePort, start } from "./servers.mjs";
 // None of these requests reaches Auth0: each is refused, or answered, before
 // the API reads the tenant's metadata. A request that carries a token needs
 // the tenant and is tested in e2e/ against it.
-const TENANT = { AUTH0_DOMAIN: "tenant.invalid", AUTH0_AUDIENCE: "https://api.example.test" };
+const TENANT = { OAUTH_ISSUER: "https://tenant.invalid/", OAUTH_AUDIENCE: "https://api.example.test" };
 
 describe("the API server's configuration", { timeout: 20_000 }, () => {
   for (const [name, env] of [
-    ["no AUTH0_DOMAIN", { AUTH0_AUDIENCE: TENANT.AUTH0_AUDIENCE }],
-    ["no AUTH0_AUDIENCE", { AUTH0_DOMAIN: TENANT.AUTH0_DOMAIN }],
-    ["the placeholder audience", { ...TENANT, AUTH0_AUDIENCE: "{yourApiIdentifier}" }],
+    ["no OAUTH_ISSUER", { OAUTH_AUDIENCE: TENANT.OAUTH_AUDIENCE }],
+    ["no OAUTH_AUDIENCE", { OAUTH_ISSUER: TENANT.OAUTH_ISSUER }],
+    ["the placeholder audience", { ...TENANT, OAUTH_AUDIENCE: "{yourApiIdentifier}" }],
   ]) {
     test(`exits instead of serving with ${name}, and reports success`, async () => {
       const api = await start("api-server.js", { ...env, API_PORT: String(await freePort()) });
       await api.stop();
       assert.equal(api.exitCode, 0);
-      assert.match(api.output(), /Exiting API Server: Please make sure AUTH0_DOMAIN and AUTH0_AUDIENCE/);
+      assert.match(api.output(), /Exiting API Server: Please make sure OAUTH_ISSUER and OAUTH_AUDIENCE/);
     });
   }
 });
@@ -30,7 +30,7 @@ describe("a filled .env.local", { timeout: 20_000 }, () => {
 
   before(() => {
     dir = mkdtempSync(join(tmpdir(), "env-local-"));
-    writeFileSync(join(dir, ".env.local"), `AUTH0_DOMAIN=${TENANT.AUTH0_DOMAIN}\nAUTH0_AUDIENCE=${TENANT.AUTH0_AUDIENCE}\n`);
+    writeFileSync(join(dir, ".env.local"), `OAUTH_ISSUER=${TENANT.OAUTH_ISSUER}\nOAUTH_AUDIENCE=${TENANT.OAUTH_AUDIENCE}\n`);
   });
 
   after(() => rmSync(dir, { recursive: true, force: true }));

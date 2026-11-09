@@ -2,11 +2,15 @@ import React from "react";
 import { ExternalApiComponent } from "../ExternalApi";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
-import { useAuth0 } from "@auth0/auth0-react";
+import { useDirectClient, useOAuth2 } from "@udibo/oauth2/react";
 import { getConfig } from "../../config";
 
 jest.mock("../../config");
-jest.mock("@auth0/auth0-react");
+jest.mock("@udibo/oauth2/react", () => ({
+  RequireAuth: ({ children }) => children,
+  useDirectClient: jest.fn(),
+  useOAuth2: jest.fn(),
+}));
 
 describe("The ExternalApi component", () => {
   beforeEach(() => {
@@ -19,11 +23,14 @@ describe("The ExternalApi component", () => {
       audience: "test-audience",
     });
 
-    useAuth0.mockReturnValue({
+    useOAuth2.mockReturnValue({
       isLoading: false,
       isAuthenticated: true,
-      getAccessTokenSilently: jest.fn(() => Promise.resolve("access-token")),
-      withAuthenticationRequired: jest.fn(),
+      login: jest.fn(),
+    });
+    useDirectClient.mockReturnValue({
+      getAccessToken: jest.fn(() => Promise.resolve("access-token")),
+      login: jest.fn(),
     });
   });
 

@@ -8,21 +8,19 @@ import Nav from "react-bootstrap/Nav";
 import Navbar from "react-bootstrap/Navbar";
 import NavDropdown from "react-bootstrap/NavDropdown";
 
-import { useAuth0 } from "@auth0/auth0-react";
+import { useOAuth2 } from "@udibo/oauth2/react";
 
 const NavBar = () => {
   const {
     user,
     isAuthenticated,
-    loginWithRedirect,
+    login,
     logout,
-  } = useAuth0();
+  } = useOAuth2();
 
   const logoutWithRedirect = () =>
     logout({
-        logoutParams: {
-          returnTo: window.location.origin,
-        }
+      returnTo: window.location.origin,
     });
 
   return (
@@ -60,7 +58,7 @@ const NavBar = () => {
                     id="qsLoginBtn"
                     variant="primary"
                     className="btn-margin"
-                    onClick={() => loginWithRedirect()}
+                    onClick={() => login()}
                   >
                     Log in
                   </Button>
@@ -96,7 +94,7 @@ const NavBar = () => {
                     id="qsLoginBtn"
                     variant="primary"
                     className="w-100"
-                    onClick={() => loginWithRedirect({})}
+                    onClick={() => login({})}
                   >
                     Log in
                   </Button>

@@ -1,13 +1,16 @@
 import React from "react";
 import { render } from "@testing-library/react";
 import { ProfileComponent } from "../Profile";
-import { useAuth0 } from "@auth0/auth0-react";
+import { useOAuth2 } from "@udibo/oauth2/react";
 
-jest.mock("@auth0/auth0-react");
+jest.mock("@udibo/oauth2/react", () => ({
+  RequireAuth: ({ children }) => children,
+  useOAuth2: jest.fn(),
+}));
 
 describe("The profile component", () => {
   beforeEach(() => {
-    useAuth0.mockReturnValue({
+    useOAuth2.mockReturnValue({
       loading: false,
       user: {
         name: "Test user",

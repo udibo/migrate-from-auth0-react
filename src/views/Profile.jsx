@@ -5,10 +5,10 @@ import Col from "react-bootstrap/Col";
 
 import Highlight from "../components/Highlight";
 import Loading from "../components/Loading";
-import { useAuth0, withAuthenticationRequired } from "@auth0/auth0-react";
+import { RequireAuth, useOAuth2 } from "@udibo/oauth2/react";
 
 export const ProfileComponent = () => {
-  const { user } = useAuth0();
+  const { user } = useOAuth2();
 
   return (
     <Container className="mb-5">
@@ -32,6 +32,10 @@ export const ProfileComponent = () => {
   );
 };
 
-export default withAuthenticationRequired(ProfileComponent, {
-  onRedirecting: () => <Loading />,
-});
+const Profile = () => (
+  <RequireAuth fallback={<Loading />}>
+    <ProfileComponent />
+  </RequireAuth>
+);
+
+export default Profile;

@@ -12,9 +12,9 @@ export default defineConfig(({ mode }) => {
       outDir: 'dist',
     },
     define: {
-      'process.env.AUTH0_DOMAIN': JSON.stringify(env.AUTH0_DOMAIN || process.env.AUTH0_DOMAIN || ''),
-      'process.env.AUTH0_CLIENT_ID': JSON.stringify(env.AUTH0_CLIENT_ID || process.env.AUTH0_CLIENT_ID || ''),
-      'process.env.AUTH0_AUDIENCE': JSON.stringify(env.AUTH0_AUDIENCE || process.env.AUTH0_AUDIENCE || ''),
+      'process.env.OAUTH_ISSUER': JSON.stringify(env.OAUTH_ISSUER || process.env.OAUTH_ISSUER || ''),
+      'process.env.OAUTH_CLIENT_ID': JSON.stringify(env.OAUTH_CLIENT_ID || process.env.OAUTH_CLIENT_ID || ''),
+      'process.env.OAUTH_AUDIENCE': JSON.stringify(env.OAUTH_AUDIENCE || process.env.OAUTH_AUDIENCE || ''),
       'process.env.API_BASE_URL': JSON.stringify(env.API_BASE_URL || process.env.API_BASE_URL || ''),
     },
   }
