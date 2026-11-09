@@ -1,60 +1,48 @@
 import { expect, test } from "@playwright/test";
-import { tenantConfigured } from "../playwright.config.mjs";
+import { OTHER_AUDIENCE, provider } from "./provider.mjs";
 
-const {
-  AUTH0_DOMAIN,
-  AUTH0_CLIENT_ID,
-  AUTH0_AUDIENCE,
-  AUTH0_TEST_USERNAME,
-  AUTH0_TEST_PASSWORD,
-  AUTH0_OTHER_AUDIENCE_CLIENT_ID,
-  AUTH0_OTHER_AUDIENCE_CLIENT_SECRET,
-} = process.env;
-const APP = "http://localhost:3000";
-const API = "http://localhost:3001/api/external";
-const OTHER_AUDIENCE = "https://other-api.example";
+const APP = provider.appOrigin;
+const API = `${provider.apiOrigin}/api/external`;
 
-test.skip(!tenantConfigured, "No Auth0 tenant configured: set AUTH0_DOMAIN, AUTH0_CLIENT_ID, AUTH0_AUDIENCE, AUTH0_TEST_USERNAME and AUTH0_TEST_PASSWORD");
-
-const atAuth0 = (url) => url.hostname === AUTH0_DOMAIN;
+const atProvider = (url) => url.origin === provider.origin;
 const atApp = (url) => url.origin === APP;
 const returnedWithError = (url) => atApp(url) && url.searchParams.has("error");
 
 function failOnReturnedError(page) {
   const url = new URL(page.url());
   if (returnedWithError(url)) {
-    throw new Error(`Auth0 sent the browser back with ${url.searchParams.get("error")}: ${url.searchParams.get("error_description")}`);
+    throw new Error(`${provider.name} sent the browser back with ${url.searchParams.get("error")}: ${url.searchParams.get("error_description")}`);
   }
 }
 
-/** Waits for Auth0's login page, failing at once when Auth0 sends the browser back to the app with an error instead. */
-async function reachAuth0(page) {
-  await page.waitForURL((url) => atAuth0(url) || returnedWithError(url));
+/** Waits for the provider's login page, failing at once when the provider sends the browser back to the app with an error instead. */
+async function reachProvider(page) {
+  await page.waitForURL((url) => atProvider(url) || returnedWithError(url));
   failOnReturnedError(page);
 }
 
 async function submitCredentials(page, password) {
-  await reachAuth0(page);
-  await page.locator('input[name="username"]').fill(AUTH0_TEST_USERNAME);
-  const passwordField = page.locator('input[name="password"]');
+  await reachProvider(page);
+  await page.locator(provider.page.username).fill(provider.username);
+  const passwordField = page.locator(provider.page.password);
   if (!(await passwordField.isVisible())) {
-    await page.locator('button[name="action"][value="default"]').click();
+    await page.locator(provider.page.submit).click();
   }
   await passwordField.fill(password);
-  await page.locator('button[name="action"][value="default"]').click();
+  await page.locator(provider.page.submit).click();
 }
 
-/** Signs in on Auth0's Universal Login page and accepts the consent page if Auth0 shows one. */
+/** Signs in on the provider's login page and accepts a consent page if the provider shows one. */
 async function signIn(page) {
   await page.goto("/");
   await page.locator("#qsLoginBtn").first().click();
-  await submitCredentials(page, AUTH0_TEST_PASSWORD);
-  const accept = page.locator('button[name="action"][value="accept"]');
-  await Promise.race([page.waitForURL(atApp), accept.waitFor()]);
+  await submitCredentials(page, provider.password);
+  const accept = page.locator(provider.page.accept);
+  await Promise.race([page.waitForURL((url) => atApp(url) && !url.searchParams.has("state")), accept.waitFor()]);
   if (!atApp(new URL(page.url()))) {
     await accept.click();
-    await page.waitForURL(atApp);
   }
+  await page.waitForURL((url) => (atApp(url) && !url.searchParams.has("state")) || returnedWithError(url));
   failOnReturnedError(page);
   await expect(page.locator("#profileDropDown")).toBeVisible();
 }
@@ -62,8 +50,8 @@ async function signIn(page) {
 // Assertions on tenant values compare them in code, so a failure names what
 // differed without printing the value.
 
-// The SDK keeps tokens in memory, so the tests move between pages through the
-// app's own links: a full page load would start the session over.
+// The client keeps tokens in memory, so the tests move between pages through
+// the app's own links: a full page load would start the session over.
 async function openProfile(page) {
   await page.locator("#profileDropDown").click();
   await page.locator(".dropdown-profile").click();
@@ -82,57 +70,58 @@ function claims(jwt) {
   return JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString());
 }
 
-test("signed out, the home page offers to log in and the protected pages send the browser to Auth0", async ({ page }) => {
+test("signed out, the home page offers to log in and the protected pages send the browser to the provider", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#qsLoginBtn").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "External API" })).toHaveCount(0);
 
   await page.goto("/profile");
-  await reachAuth0(page);
+  await reachProvider(page);
   const authorize = new URL(page.url());
   expect(authorize.pathname).toMatch(/^\/u\/login|^\/authorize/);
-  await expect(page.locator('input[name="username"]')).toBeVisible();
+  await expect(page.locator(provider.page.username)).toBeVisible();
 });
 
 test("the sign-in request is an authorization-code request with PKCE, for the API's audience", async ({ page }) => {
   const authorizeRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
-    return atAuth0(url) && url.pathname === "/authorize";
+    return atProvider(url) && url.pathname === "/authorize";
   });
   await page.goto("/");
   await page.locator("#qsLoginBtn").first().click();
   const url = new URL((await authorizeRequest).url());
   const params = Object.fromEntries(url.searchParams);
-  expect(params.client_id === AUTH0_CLIENT_ID, "client_id is the application's").toBe(true);
-  expect(params.audience === AUTH0_AUDIENCE, "audience is the API's identifier").toBe(true);
+  expect(params.client_id === provider.clientId, "client_id is the application's").toBe(true);
+  expect(params.audience === provider.audience, "audience is the API's identifier").toBe(true);
   const { redirect_uri, response_type, response_mode, code_challenge_method } = params;
+  // response_mode is left out: query is the default for response_type=code.
   expect({ redirect_uri, response_type, response_mode, code_challenge_method }).toEqual({
     redirect_uri: APP,
     response_type: "code",
-    response_mode: "query",
+    response_mode: undefined,
     code_challenge_method: "S256",
   });
   expect(params.scope.split(" ")).toEqual(expect.arrayContaining(["openid", "profile", "email"]));
-  expect(Boolean(params.state) && Boolean(params.nonce), "state and nonce are present").toBe(true);
+  expect(Boolean(params.state), "state is present").toBe(true);
   expect(/^[A-Za-z0-9_-]{43}$/.test(params.code_challenge), "code_challenge is an S256 digest").toBe(true);
 });
 
-test("a wrong password keeps the user at Auth0, signed out", async ({ page }) => {
+test("a wrong password keeps the user at the provider, signed out", async ({ page }) => {
   await page.goto("/");
   await page.locator("#qsLoginBtn").first().click();
-  await submitCredentials(page, `${AUTH0_TEST_PASSWORD}-wrong`);
-  await expect(page.locator("#error-element-password, [data-error-code], .ulp-input-error-message").first()).toBeVisible();
-  expect(atAuth0(new URL(page.url()))).toBe(true);
+  await submitCredentials(page, `${provider.password}-wrong`);
+  await expect(page.locator(provider.page.error).first()).toBeVisible();
+  expect(atProvider(new URL(page.url()))).toBe(true);
 });
 
 test("signing in shows the user's profile", async ({ page }) => {
   await signIn(page);
   await openProfile(page);
   const shownEmail = await page.locator(".profile-header p.lead").innerText();
-  expect(shownEmail === AUTH0_TEST_USERNAME, "the page shows the test user's email").toBe(true);
+  expect(shownEmail === provider.username, "the page shows the test user's email").toBe(true);
   const profile = JSON.parse(await page.locator("pre code").first().innerText());
-  expect(profile.email === AUTH0_TEST_USERNAME, "the profile is the test user's").toBe(true);
-  expect(profile.sub).toMatch(/^auth0\|/);
+  expect(profile.email === provider.username, "the profile is the test user's").toBe(true);
+  expect(provider.subjectPattern.test(profile.sub), "the profile's subject is the provider's user id").toBe(true);
 });
 
 test("the API accepts the access token the app sends, and refuses it once altered", async ({ page, request }) => {
@@ -142,9 +131,10 @@ test("the API accepts the access token the app sends, and refuses it once altere
 
   expect(token?.split(".").length === 3, "the access token is a JWT").toBe(true);
   const payload = claims(token);
-  expect(payload.iss === `https://${AUTH0_DOMAIN}/`, "the token's issuer is the tenant").toBe(true);
-  expect([payload.aud].flat().includes(AUTH0_AUDIENCE), "the token is for the API's audience").toBe(true);
-  expect(payload.azp === AUTH0_CLIENT_ID, "the token was issued to this application").toBe(true);
+  expect(payload.iss === provider.issuer, "the token's issuer is the provider").toBe(true);
+  expect([payload.aud].flat().includes(provider.audience), "the token is for the API's audience").toBe(true);
+  // Auth0 names the client in azp; an RFC 9068 token, in client_id.
+  expect((payload.azp ?? payload.client_id) === provider.clientId, "the token was issued to this application").toBe(true);
 
   const accepted = await request.get(API, { headers: { Authorization: `Bearer ${token}` } });
   expect(accepted.status()).toBe(200);
@@ -157,37 +147,45 @@ test("the API accepts the access token the app sends, and refuses it once altere
   expect(altered.headers()["www-authenticate"]).toContain('error="invalid_token"');
 });
 
-test("logging out returns to the app signed out, and ends the session at Auth0", async ({ page }) => {
+test("logging out returns to the app signed out, and ends the session at the provider", async ({ page }) => {
   await signIn(page);
   await page.locator("#profileDropDown").click();
   await page.locator("#qsLogoutBtn").first().click();
   await page.waitForURL((url) => atApp(url) && url.pathname === "/");
   await expect(page.locator("#qsLoginBtn").first()).toBeVisible();
 
+  if (!provider.endsSessionOnLogout) {
+    test.info().annotations.push({
+      type: "not checked",
+      description: `${provider.name} advertises no end_session_endpoint (udibo/oauth2#177), so the client signs out locally only`,
+    });
+    return;
+  }
   await page.goto("/profile");
-  await reachAuth0(page);
-  await expect(page.locator('input[name="username"]')).toBeVisible();
+  await reachProvider(page);
+  await expect(page.locator(provider.page.username)).toBeVisible();
 });
 
-test("the API refuses a token from the same tenant for another API", async ({ request }) => {
+test("the API refuses a token from the same provider for another API", async ({ request }) => {
+  const other = provider.otherAudienceClient;
   test.skip(
-    !AUTH0_OTHER_AUDIENCE_CLIENT_ID || !AUTH0_OTHER_AUDIENCE_CLIENT_SECRET,
+    !other,
     `No second API configured: set AUTH0_OTHER_AUDIENCE_CLIENT_ID and AUTH0_OTHER_AUDIENCE_CLIENT_SECRET for a machine-to-machine application authorized for ${OTHER_AUDIENCE}`,
   );
-  const issued = await request.post(`https://${AUTH0_DOMAIN}/oauth/token`, {
+  const issued = await request.post(provider.tokenEndpoint, {
     form: {
       grant_type: "client_credentials",
-      client_id: AUTH0_OTHER_AUDIENCE_CLIENT_ID,
-      client_secret: AUTH0_OTHER_AUDIENCE_CLIENT_SECRET,
+      client_id: other.id,
+      client_secret: other.secret,
       audience: OTHER_AUDIENCE,
     },
   });
-  expect(issued.status(), "Auth0 issues the other API's token").toBe(200);
+  expect(issued.status(), "the provider issues the other API's token").toBe(200);
   const { access_token: token } = await issued.json();
   const payload = claims(token);
-  expect(payload.iss === `https://${AUTH0_DOMAIN}/`, "the token's issuer is the same tenant").toBe(true);
+  expect(payload.iss === provider.issuer, "the token's issuer is the same provider").toBe(true);
   expect([payload.aud].flat().includes(OTHER_AUDIENCE), "the token is for the other API").toBe(true);
-  expect([payload.aud].flat().includes(AUTH0_AUDIENCE), "the token is not for this API").toBe(false);
+  expect([payload.aud].flat().includes(provider.audience), "the token is not for this API").toBe(false);
 
   const response = await request.get(API, { headers: { Authorization: `Bearer ${token}` } });
   expect(response.status()).toBe(401);

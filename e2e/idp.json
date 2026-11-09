@@ -1,0 +1,34 @@
+{
+  "consent": "auto",
+  "scopesSupported": ["openid", "profile", "email"],
+  "users": [
+    {
+      "id": "user-alice",
+      "username": "alice@example.com",
+      "password": "alice-password",
+      "claims": {
+        "name": "Alice Example",
+        "nickname": "alice",
+        "email": "alice@example.com",
+        "email_verified": true,
+        "picture": "http://localhost:3000/favicon.ico"
+      }
+    }
+  ],
+  "clients": [
+    {
+      "id": "example-spa",
+      "redirectUris": ["http://127.0.0.1"],
+      "grants": ["authorization_code", "refresh_token"],
+      "accessTokenFormat": "jwt",
+      "audience": "https://migrate-from-auth0-react.example/api"
+    },
+    {
+      "id": "other-api-client",
+      "secret": "other-api-secret",
+      "grants": ["client_credentials"],
+      "accessTokenFormat": "jwt",
+      "audience": "https://other-api.example"
+    }
+  ]
+}
