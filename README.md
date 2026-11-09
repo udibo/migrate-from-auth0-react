@@ -375,7 +375,9 @@ dashboard:
      **Development**, so `http://localhost` is allowed.
    - Grant: **Authorization code** (add **Refresh token** for session renewal;
      the tests do not need it).
-   - Redirect URI and post-logout redirect URI: `http://localhost:3000`.
+   - Redirect URI and post-logout redirect URI: exactly `http://localhost:3000`,
+     with no trailing slash. The app sends its origin as both, and Udibo
+     matches them exactly.
    - Access tokens: **JWT**, audience
      `https://migrate-from-auth0-react.example/api`.
 2. **Test user.** A synthetic user who signs in with a username and password,
