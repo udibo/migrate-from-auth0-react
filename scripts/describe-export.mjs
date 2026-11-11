@@ -1,7 +1,9 @@
 /**
  * Prints the shape of an Auth0 user export: how many records, and for every
  * field path the type it holds and in how many records it appears. It never
- * prints a value, so its output can go in a CI log.
+ * prints a value, so its output can go in a CI log. Metadata and an
+ * identity's `profileData` are reported by type and key count only, since
+ * their keys are the tenant's own and can themselves be personal data.
  *
  *   node scripts/describe-export.mjs <auth0 export>
  */
@@ -17,11 +19,17 @@ function typeOf(value) {
   return typeof value;
 }
 
+const OPAQUE_PATHS = new Set(["app_metadata", "user_metadata", "identities[].profileData", "metadata", "userMetadata"]);
+
 function walk(value, path, shape) {
   const type = typeOf(value);
   const entry = (shape[path] ??= { types: new Set(), count: 0 });
   entry.types.add(type);
   entry.count += 1;
+  if (OPAQUE_PATHS.has(path)) {
+    if (type === "object") entry.maxKeys = Math.max(entry.maxKeys ?? 0, Object.keys(value).length);
+    return;
+  }
   if (type === "object") {
     for (const [key, child] of Object.entries(value)) walk(child, path ? `${path}.${key}` : key, shape);
   } else if (type === "array") {
@@ -38,7 +46,7 @@ export function describeRecords(records) {
   const fields = Object.fromEntries(
     Object.entries(shape)
       .sort(([a], [b]) => a.localeCompare(b))
-      .map(([path, { types, count }]) => [path, { types: [...types].sort().join("|"), count }]),
+      .map(([path, { types, count, maxKeys }]) => [path, { types: [...types].sort().join("|"), count, ...(maxKeys === undefined ? {} : { maxKeys }) }]),
   );
   return { records: records.length, fields };
 }

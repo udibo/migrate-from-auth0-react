@@ -309,7 +309,19 @@ authorized for the **Auth0 Management API** with `read:users` (see [Set up the
 Auth0 tenant](#set-up-the-auth0-tenant)). It asks for a bulk export job
 (`POST /api/v2/jobs/users-exports`) for the profile fields the recipe maps,
 polls the job and downloads its gzipped NDJSON. If Auth0 refuses the job or
-its status, it says why and reads `GET /api/v2/users` page by page instead.
+its status, it says why and reads `GET /api/v2/users` page by page instead,
+asking for the same fields (`fields` with `include_fields=true`).
+
+The fallback suits a small tenant only. Auth0 pages through the first 1,000
+users and refuses the page after: the
+[Get Users reference](https://auth0.com/docs/api/management/v2/users/get-users)
+documents a 400 that says "You can only page through the first 1000 records".
+A larger tenant's export then fails rather than writing part of its users.
+
+`scripts/describe-export.mjs` prints a file's field paths, types and counts.
+It reports `app_metadata`, `user_metadata` and `identities[].profileData` by
+type and key count only, because their keys are the tenant's own and can be
+personal data.
 
 The file holds every user's email address and profile. It is written as the
 earlier examples' exporters write theirs:
@@ -347,17 +359,33 @@ npm run auth0-to-udibo -- auth0-users.ndjson udibo-import.ndjson
 ```
 
 `scripts/auth0-to-udibo.mjs` applies the mapping from Udibo's Auth0 migration
-recipe, field for field:
+recipe, with one correction for social identities:
 
 | Auth0 | Udibo import record |
 | --- | --- |
 | `email`, `email_verified` | `email`, `emailVerified` |
 | `nickname`, `given_name`, `family_name`, `name` | `username`, `firstName`, `lastName`, `displayName` |
-| `identities[]` where `isSocial` | `identities[]` (`provider`, `subject` from `user_id`) |
+| `identities[]` where `isSocial`, from `google-oauth2`, `github` or `apple` | `identities[]` with `provider` `google`, `github` or `apple`, and `subject` from `user_id` |
 | `app_metadata`, `user_metadata` | `metadata`, `userMetadata` |
 
 It writes no `legacyCredential`, and a hash a record does carry is dropped and
-counted. The output is written the same way as the export. From the real
+counted.
+
+**Social identities.** The recipe copies Auth0's provider name, but Udibo
+links a social identity by its preset type: `providerKey` in Udibo's
+`apps/api/src/services/identity/identity-provider.ts` returns the preset type
+(`google`, `github`, `discord`, `apple`) for a preset provider. Auth0 calls
+Google `google-oauth2`.
+- **Translated:** the transform renames `google-oauth2` to `google` and keeps
+  `github` and `apple`. Auth0 documents an identity's `user_id` as "User's
+  unique identifier for this connection/provider". Udibo's connectors
+  (`@udibo/oauth2`'s external sign-in) take Google's and Apple's `sub` and
+  GitHub's numeric `id` as the subject.
+- **Left out:** an identity from any other Auth0 social connection (Facebook,
+  Microsoft and the rest) has no Udibo preset to match. The transform leaves
+  it out and reports how many, and such a user signs in by email instead.
+- **Untested here:** this tenant has no social users, so the translation is
+  covered by the transform's tests, not by a real export. The output is written the same way as the export. From the real
 export it produced 3 records with `email`, `emailVerified`, `username` and
 `displayName`, and nothing else.
 
@@ -406,6 +434,8 @@ repository) differ from the real export:
   and `logins_count`, which the fixture leaves out.
 - The fixture's names and hashes are not in a default database user's
   export: `given_name`, `family_name` and `username` appear only when set.
+- The recipe maps a social identity's Auth0 provider name straight across,
+  but Udibo matches the preset type: `google-oauth2` has to become `google`.
 
 For a database user, `name` and `nickname` are what Auth0 set at sign-up. So
 `displayName` and `username` come from them, not from anything the user

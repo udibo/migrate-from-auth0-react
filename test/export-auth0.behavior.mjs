@@ -113,7 +113,7 @@ describe("exporting the Auth0 tenant's users", () => {
       const auth0 = fakeAuth0({
         ...tokenRoute,
         ...routes,
-        "GET /api/v2/users": (u) => json(u.searchParams.get("page") === "0" ? page0 : [ALAN]),
+        "GET /api/v2/users": (u) => json({ 0: page0, 1: [ALAN] }[u.searchParams.get("page")] ?? []),
       });
       const file = join(dir, "users.ndjson");
 
@@ -123,10 +123,29 @@ describe("exporting the Auth0 tenant's users", () => {
       assert.equal(result.count, 101);
       assert.match(result.jobRefusal, /Auth0 answered 403 \((operation_not_supported|insufficient_scope): /);
       assert.equal(lines(file).length, 101);
-      const pages = auth0.calls.filter((c) => c.key === "GET /api/v2/users").map((c) => [c.url.searchParams.get("page"), c.url.searchParams.get("per_page")]);
-      assert.deepEqual(pages, [["0", "100"], ["1", "100"]]);
+      const pages = auth0.calls.filter((c) => c.key === "GET /api/v2/users").map((c) => c.url.searchParams);
+      assert.deepEqual(pages.map((q) => q.get("page")), ["0", "1", "2"]);
+      for (const query of pages) {
+        assert.equal(query.get("fields"), EXPORT_FIELDS.join(","));
+        assert.equal(query.get("include_fields"), "true");
+      }
     });
   }
+
+  test("reports a malformed line in the job's file by its number, without quoting it, and writes nothing", async () => {
+    const gz = gzipSync(Buffer.from(`${JSON.stringify(ADA)}\n{"email": "leak@example.test",\n`));
+    const auth0 = fakeAuth0({
+      ...tokenRoute,
+      "POST /api/v2/jobs/users-exports": json({ id: "job_5", status: "completed", location: "https://download.example.test/bad.gz" }, 201),
+      "GET https://download.example.test/bad.gz": () => new Response(gz),
+    });
+    const file = join(dir, "users.ndjson");
+    await assert.rejects(exportAuth0Users(file, options(auth0.fetch)), (error) => {
+      assert.equal(error.message, "Line 2 of the export job's file is not valid JSON");
+      return true;
+    });
+    assert.deepEqual(fs.readdirSync(dir), []);
+  });
 
   test("writes nothing when the token is refused", async () => {
     const auth0 = fakeAuth0({ "POST /oauth/token": json({ error: "access_denied", error_description: "Unauthorized" }, 401) });
@@ -236,19 +255,34 @@ describe("turning Auth0 records into Udibo import records", () => {
     });
   });
 
-  test("links a social user's identities and skips the database identity", () => {
+  test("links a social user's identities under Udibo's preset names, and skips the database identity", () => {
     assert.deepEqual(toImportRecord(ALAN), {
       email: "alan@example.test",
       emailVerified: true,
       username: "alan",
       displayName: "Alan Turing",
-      identities: [{ provider: "google-oauth2", subject: "1035" }],
+      identities: [{ provider: "google", subject: "1035" }],
     });
+    const github = { ...ALAN, identities: [{ provider: "github", user_id: 4242, isSocial: true }, { provider: "apple", user_id: "001.abc", isSocial: true }] };
+    assert.deepEqual(toImportRecord(github).identities, [
+      { provider: "github", subject: "4242" },
+      { provider: "apple", subject: "001.abc" },
+    ]);
   });
 
-  test("an unverified email stays unverified", () => {
-    assert.equal(toImportRecord({ ...ADA, email_verified: false }).emailVerified, false);
-    assert.equal(toImportRecord({ ...ADA, email_verified: undefined }).emailVerified, false);
+  test("leaves out, and counts, a social identity from a provider Udibo has no preset for", async () => {
+    const mixed = { ...ALAN, identities: [...ALAN.identities, { provider: "facebook", user_id: "77", isSocial: true }, { provider: "windowslive", user_id: "88", isSocial: true }] };
+    assert.deepEqual(toImportRecord(mixed).identities, [{ provider: "google", subject: "1035" }]);
+    const input = join(dir, "export.ndjson");
+    fs.writeFileSync(input, [mixed, ADA].map((u) => JSON.stringify(u)).join("\n"));
+    assert.deepEqual(await transformExport(input, join(dir, "import.ndjson")), { count: 2, hashesDropped: 0, identitiesDropped: 2 });
+  });
+
+  test("an email is verified only when Auth0 says exactly true", () => {
+    for (const value of [false, undefined, "false", "true", 1, null]) {
+      assert.equal(toImportRecord({ ...ADA, email_verified: value }).emailVerified, false, String(value));
+    }
+    assert.equal(toImportRecord({ ...ADA, email_verified: true }).emailVerified, true);
   });
 
   test("drops a password hash a record carries, and counts it", async () => {
@@ -263,7 +297,7 @@ describe("turning Auth0 records into Udibo import records", () => {
     const input = join(dir, "export.ndjson");
     fs.writeFileSync(input, withHashes.map((u) => JSON.stringify(u)).join("\n"));
     const output = join(dir, "import.ndjson");
-    assert.deepEqual(await transformExport(input, output), { count: 3, hashesDropped: 2 });
+    assert.deepEqual(await transformExport(input, output), { count: 3, hashesDropped: 2, identitiesDropped: 0 });
     assert.equal(mode(output), 0o600);
     assert.equal(fs.readFileSync(output, "utf8").includes("$2b$"), false);
   });
@@ -295,8 +329,23 @@ describe("describing an export", () => {
     assert.equal(shape.records, 2);
     assert.deepEqual(shape.fields["identities[].isSocial"], { types: "boolean", count: 2 });
     assert.deepEqual(shape.fields.given_name, { types: "string", count: 1 });
-    assert.deepEqual(shape.fields["app_metadata.roles[]"], { types: "string", count: 1 });
+    assert.deepEqual(shape.fields["identities[].connection"], { types: "string", count: 2 });
     const text = JSON.stringify(shape);
     for (const value of ["ada@example.test", "Lovelace", "a1b2c3", "1035", "admin"]) assert.equal(text.includes(value), false, value);
+  });
+
+  test("reports metadata and profileData by type and key count only, since their keys can be personal data", () => {
+    const user = {
+      ...ADA,
+      user_metadata: { contacts: { "friend@example.test": true }, theme: "dark" },
+      app_metadata: { "customer-4711": { plan: "pro" } },
+      identities: [{ ...ADA.identities[0], profileData: { email: "ada@example.test", "nickname-ada": "x" } }],
+    };
+    const shape = describeRecords([user]);
+    assert.deepEqual(shape.fields.user_metadata, { types: "object", count: 1, maxKeys: 2 });
+    assert.deepEqual(shape.fields.app_metadata, { types: "object", count: 1, maxKeys: 1 });
+    assert.deepEqual(shape.fields["identities[].profileData"], { types: "object", count: 1, maxKeys: 2 });
+    const text = JSON.stringify(shape);
+    for (const key of ["friend@example.test", "contacts", "customer-4711", "plan", "nickname-ada"]) assert.equal(text.includes(key), false, key);
   });
 });
