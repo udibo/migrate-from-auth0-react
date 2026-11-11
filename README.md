@@ -471,7 +471,7 @@ trace includes what each step typed.
 | --- | --- | --- | --- |
 | 0 | not used | 22, 24 (CI); 26 (locally) | 2026-11-06, [run 42172564187](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42172564187): 6 of 6 passed |
 | 1 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-08, [run 42560839171](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42560839171): 7 of 7 passed |
-| 2 | 0.51.0 | 22, 24 (CI); 26 (locally) | Udibo: not yet run, no tenant secrets set. Auth0: as step 1 |
+| 2 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-10, [run 42954125573](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42954125573): 7 of 7 passed against Udibo, 7 of 7 against Auth0 |
 
 ## The upstream sample's README
 
