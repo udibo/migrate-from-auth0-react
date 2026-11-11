@@ -152,8 +152,19 @@ test("the API accepts the access token the app sends, and refuses it once altere
 
 test("logging out returns to the app signed out, and ends the session at the provider", async ({ page }) => {
   await signIn(page);
+  // The app is already on / when logout starts, so waiting for / alone would
+  // pass before the browser has been to the provider's end-session endpoint.
+  const leftForProvider = provider.endsSessionOnLogout
+    ? page.waitForRequest((request) => request.isNavigationRequest() && atProvider(new URL(request.url())))
+    : null;
   await page.locator("#profileDropDown").click();
   await page.locator("#qsLogoutBtn").first().click();
+  if (leftForProvider) {
+    await leftForProvider;
+    await page.waitForEvent("framenavigated", {
+      predicate: (frame) => frame === page.mainFrame() && atApp(new URL(frame.url())),
+    });
+  }
   await page.waitForURL((url) => atApp(url) && url.pathname === "/");
   await expect(page.locator("#qsLoginBtn").first()).toBeVisible();
 
