@@ -14,6 +14,11 @@ name: Live tenant
 
 on:
   workflow_dispatch:
+    inputs:
+      export-auth0-users:
+        description: "Instead of the tests, export the Auth0 tenant's users and print the export's shape (field names and types, never values)"
+        type: boolean
+        default: false
   schedule:
     - cron: "17 6 * * *"
 
@@ -27,6 +32,7 @@ concurrency:
 jobs:
   test:
     name: Test against the ${{ matrix.provider }} tenant
+    if: ${{ !inputs.export-auth0-users }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -157,3 +163,37 @@ jobs:
         with:
           path: .oauth2-release-tested
           key: live-tenant-${{ matrix.provider }}-udibo-oauth2-${{ steps.release.outputs.candidate }}
+
+  # Step 3's export, run by hand: it reads the Auth0 tenant's users with the
+  # read:users machine-to-machine application, prints the shape of the export
+  # and of the import records it becomes, and deletes both files. Nothing but
+  # field names, types and counts reaches the log, and no file is uploaded.
+  export:
+    name: Export the Auth0 tenant's users
+    if: ${{ inputs.export-auth0-users }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Export the users
+        env:
+          AUTH0_DOMAIN: ${{ secrets.AUTH0_DOMAIN }}
+          AUTH0_EXPORT_CLIENT_ID: ${{ secrets.AUTH0_EXPORT_CLIENT_ID }}
+          AUTH0_EXPORT_CLIENT_SECRET: ${{ secrets.AUTH0_EXPORT_CLIENT_SECRET }}
+        run: npm run export:auth0 -- "$RUNNER_TEMP/auth0-users.ndjson"
+      - name: The export's shape
+        run: node scripts/describe-export.mjs "$RUNNER_TEMP/auth0-users.ndjson"
+      - name: Turn it into Udibo import records
+        run: npm run auth0-to-udibo -- "$RUNNER_TEMP/auth0-users.ndjson" "$RUNNER_TEMP/udibo-import.ndjson"
+      - name: The import records' shape
+        run: node scripts/describe-export.mjs "$RUNNER_TEMP/udibo-import.ndjson"
+      - name: Delete the files
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/auth0-users.ndjson* "$RUNNER_TEMP"/udibo-import.ndjson*
