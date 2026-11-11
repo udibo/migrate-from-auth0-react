@@ -6,13 +6,19 @@
  *   email, email_verified          → email, emailVerified
  *   nickname, given_name,
  *   family_name, name              → username, firstName, lastName, displayName
- *   identities[] where isSocial    → identities[] ({ provider, subject: user_id })
+ *   identities[] where isSocial    → identities[] ({ provider, subject: user_id }),
+ *                                    for providers Udibo has a preset for
  *   app_metadata, user_metadata    → metadata, userMetadata
  *
  * No record carries a `legacyCredential`: Auth0 releases password hashes only
  * through a support request its Free plan cannot make, so every account
  * imports without a password. A record that does carry `password_hash` or
  * `custom_password_hash` has it dropped, and the count is reported.
+ *
+ * Udibo stores a social identity under its preset type (`google`, `github`,
+ * `apple`), where Auth0 names the provider `google-oauth2`, `github` or
+ * `apple`, so the provider is translated. An identity from any other Auth0
+ * social connection has no Udibo preset to match and is left out, counted.
  *
  *   npm run auth0-to-udibo -- <auth0 export> <udibo import file>
  *
@@ -27,6 +33,18 @@ import { pathToFileURL } from "node:url";
 import { withInterrupts, writePrivateNdjson } from "./private-file.mjs";
 
 const USAGE = "Usage: npm run auth0-to-udibo -- <auth0 export> <udibo import file>";
+
+/** Auth0 social provider name → Udibo preset type, for the presets whose subject is the provider's own user id. */
+export const AUTH0_SOCIAL_PRESETS = { "google-oauth2": "google", github: "github", apple: "apple" };
+
+function socialIdentities(user) {
+  return (user.identities ?? []).filter((identity) => identity.isSocial === true);
+}
+
+/** How many of a record's social identities have no Udibo preset and are left out. */
+export function unmappedSocialIdentities(user) {
+  return socialIdentities(user).filter((identity) => !Object.hasOwn(AUTH0_SOCIAL_PRESETS, identity.provider)).length;
+}
 
 function present(value) {
   return typeof value === "string" && value !== "" ? value : undefined;
@@ -43,9 +61,9 @@ export function carriesPasswordHash(user) {
 
 /** Maps one Auth0 user record to a Udibo `UserImportRecord`, leaving out absent fields. */
 export function toImportRecord(user) {
-  const identities = (user.identities ?? [])
-    .filter((identity) => identity.isSocial === true)
-    .map((identity) => ({ provider: identity.provider, subject: String(identity.user_id) }));
+  const identities = socialIdentities(user)
+    .filter((identity) => Object.hasOwn(AUTH0_SOCIAL_PRESETS, identity.provider))
+    .map((identity) => ({ provider: AUTH0_SOCIAL_PRESETS[identity.provider], subject: String(identity.user_id) }));
   const record = {
     email: present(user.email),
     emailVerified: user.email_verified === true,
@@ -60,7 +78,8 @@ export function toImportRecord(user) {
   return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
 }
 
-function parseJson(text, where) {
+/** Parses `text` as JSON, reporting a failure by `where` alone: JSON.parse's message quotes the input. */
+export function parseJson(text, where) {
   try {
     return JSON.parse(text);
   } catch {
@@ -85,13 +104,14 @@ export function parseAuth0Export(text) {
 
 /**
  * Transforms the export at `input` into a new import file at `output`.
- * Resolves with `{ count, hashesDropped }`.
+ * Resolves with `{ count, hashesDropped, identitiesDropped }`.
  */
 export async function transformExport(input, output, signal) {
   const users = parseAuth0Export(fs.readFileSync(input, "utf8"));
   const hashesDropped = users.filter(carriesPasswordHash).length;
+  const identitiesDropped = users.reduce((sum, user) => sum + unmappedSocialIdentities(user), 0);
   const count = await writePrivateNdjson(users.map(toImportRecord), output, signal);
-  return { count, hashesDropped };
+  return { count, hashesDropped, identitiesDropped };
 }
 
 /** Runs the command with `args`; resolves with the exit code and reports counts to stderr. */
@@ -103,9 +123,12 @@ export async function main(args) {
   const [input, output] = args;
   try {
     return await withInterrupts(async (signal) => {
-      const { count, hashesDropped } = await transformExport(input, output, signal);
+      const { count, hashesDropped, identitiesDropped } = await transformExport(input, output, signal);
       console.error(`Wrote ${count} import records to ${output} (mode 0600), none with a password.`);
       if (hashesDropped > 0) console.error(`${hashesDropped} records carried a password hash, which was left out.`);
+      if (identitiesDropped > 0) {
+        console.error(`${identitiesDropped} social identities came from a provider Udibo has no preset for, and were left out.`);
+      }
       return 0;
     }, () => console.error("Interrupted; no file was written."));
   } catch (error) {

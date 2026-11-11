@@ -13,7 +13,10 @@
  * AUTH0_EXPORT_CLIENT_SECRET from the environment), then asks for a bulk
  * export job (POST /api/v2/jobs/users-exports), polls it and downloads its
  * gzipped NDJSON. When Auth0 refuses the job or its status, it says why and
- * reads the users page by page from GET /api/v2/users instead.
+ * reads the users page by page from GET /api/v2/users instead, asking for the
+ * same fields. Auth0 pages through only the first 1,000 users and refuses
+ * the page after, so the fallback suits a small tenant; a larger one fails
+ * rather than writing part of its users.
  *
  * The records go to <file>.partial, created with mode 0600, which becomes
  * <file> only once every user is written; the command refuses a path that
@@ -26,6 +29,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 
+import { parseJson } from "./auth0-to-udibo.mjs";
 import { refuseExisting, withInterrupts, writePrivateNdjson } from "./private-file.mjs";
 
 const USAGE = "Usage: npm run export:auth0 -- <file> [--connection-id=con_…]";
@@ -124,8 +128,8 @@ async function* exportJobUsers({ domain, connectionId, token, fetch: fetchImpl, 
   }
   const download = await call(fetchImpl, "export download", job.location, {}, signal);
   const text = gunzipSync(Buffer.from(await download.arrayBuffer())).toString("utf8");
-  for (const line of text.split("\n")) {
-    if (line.trim() !== "") yield JSON.parse(line);
+  for (const [index, line] of text.split("\n").entries()) {
+    if (line.trim() !== "") yield parseJson(line, `Line ${index + 1} of the export job's file`);
   }
 }
 
@@ -134,10 +138,12 @@ async function* usersApiUsers({ domain, token, fetch: fetchImpl, signal }) {
     const url = new URL(`https://${domain}/api/v2/users`);
     url.searchParams.set("per_page", String(PAGE_SIZE));
     url.searchParams.set("page", String(page));
+    url.searchParams.set("fields", EXPORT_FIELDS.join(","));
+    url.searchParams.set("include_fields", "true");
     const response = await call(fetchImpl, "users API", url, { headers: { authorization: `Bearer ${token}` } }, signal);
     const users = await response.json();
+    if (users.length === 0) return;
     yield* users;
-    if (users.length < PAGE_SIZE) return;
   }
 }
 
