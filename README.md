@@ -16,7 +16,7 @@ exactly what that step changes.
 | `step-0-upstream` | The upstream sample: `@auth0/auth0-react` and Auth0 |
 | `step-1-udibo-package` | `@udibo/oauth2`, still against Auth0 |
 | `step-2-udibo-idp` | `@udibo/oauth2` against Udibo's hosted identity service |
-| `step-3-user-import` | Users imported from Auth0 into Udibo _(not yet published)_ |
+| `step-3-user-import` | Users imported from Auth0 into Udibo, without passwords |
 
 ## Step 0: the upstream sample
 
@@ -270,6 +270,153 @@ the move can be reverted by configuration while users and clients are still
 moving. It can be dropped once step 3 has retired the Auth0 tenant. Each job
 skips, and says so, until its own secrets are set.
 
+## Step 3: move the users, without their passwords
+
+Step 3 moves the Auth0 tenant's users into the Udibo tenant. Auth0 does not
+hand over password hashes on its Free plan, so every account arrives with no
+password. Its owner signs in the first time with a code or link emailed by
+Udibo, or sets a password through "Forgot password?". The app does not change.
+
+### Why the passwords stay behind
+
+Auth0's Management API returns no password hashes. Its documentation
+releases them only through a support ticket:
+- **Plan:** the ticket "is not available for our Free subscription tier"
+  ([Export Data](https://auth0.com/docs/troubleshoot/customer-support/manage-subscriptions/export-data)).
+- **What a paid tenant must provide**
+  ([Export Password Hashes and MFA Secrets](https://auth0.com/docs/manage-users/user-migration/export-password-hashes-and-mfa-secrets)):
+  - an eligibility review ("Not all requests qualify");
+  - an acknowledgment form signed by a CISO, CSO or a VP or above, with a
+    second tenant admin's confirmation;
+  - a 4096-bit RSA PGP key.
+- **Timing:** there is no ETA, and the download link expires in 3 days.
+- **Format:** neither page states the hash algorithm or file format.
+
+This tenant is on the Free plan, so the hashes cannot be requested at all.
+Udibo checks no password against Auth0 at sign-in, so the accounts import
+passwordless, as Udibo's migration guide says to do when hashes cannot be
+exported. A tenant that does obtain bcrypt hashes can add them to the
+records as `legacyCredential`, and its users then keep their passwords.
+
+### Export
+
+```sh
+npm run export:auth0 -- auth0-users.ndjson
+```
+
+`scripts/export-auth0-users.mjs` signs in as a machine-to-machine application
+authorized for the **Auth0 Management API** with `read:users` (see [Set up the
+Auth0 tenant](#set-up-the-auth0-tenant)). It asks for a bulk export job
+(`POST /api/v2/jobs/users-exports`) for the profile fields the recipe maps,
+polls the job and downloads its gzipped NDJSON. If Auth0 refuses the job or
+its status, it says why and reads `GET /api/v2/users` page by page instead.
+
+The file holds every user's email address and profile. It is written as the
+earlier examples' exporters write theirs:
+- to `<file>.partial` with mode 0600, renamed only when complete;
+- an existing file, partial file or link is refused;
+- the partial file is removed when the export fails or is interrupted
+  (SIGHUP, SIGINT, SIGTERM).
+
+No record reaches the terminal, and `*.ndjson` is ignored by git. Delete the
+file once the import is verified.
+
+**The real export, on 2026-11-10** (run
+[42956429750](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42956429750),
+which printed only field names, types and counts):
+- **The export job worked on the Free tenant** with `read:users` alone, both
+  creating the job and reading its status. Auth0's
+  [bulk export guide](https://auth0.com/docs/manage-users/user-migration/bulk-user-exports)
+  says the feature "is not available on the Free plan"; at least the API job
+  is.
+- **It returned the tenant's 3 synthetic users, every one with:**
+  - `user_id`, `email`, `email_verified`, `name`, `nickname` and `picture`;
+  - `created_at` and `updated_at` (two also have `last_login` and
+    `logins_count`);
+  - `identities[]` with `connection`, `isSocial`, `provider`, `user_id` and a
+    `profileData` object holding `email` and `email_verified`.
+- **Requested but absent:** `username`, `given_name`, `family_name`,
+  `app_metadata`, `user_metadata` and `blocked`. None is set on these users,
+  and an unset field is left out rather than sent empty. There is no
+  `password_hash` or `custom_password_hash`.
+
+### Turn it into Udibo import records
+
+```sh
+npm run auth0-to-udibo -- auth0-users.ndjson udibo-import.ndjson
+```
+
+`scripts/auth0-to-udibo.mjs` applies the mapping from Udibo's Auth0 migration
+recipe, field for field:
+
+| Auth0 | Udibo import record |
+| --- | --- |
+| `email`, `email_verified` | `email`, `emailVerified` |
+| `nickname`, `given_name`, `family_name`, `name` | `username`, `firstName`, `lastName`, `displayName` |
+| `identities[]` where `isSocial` | `identities[]` (`provider`, `subject` from `user_id`) |
+| `app_metadata`, `user_metadata` | `metadata`, `userMetadata` |
+
+It writes no `legacyCredential`, and a hash a record does carry is dropped and
+counted. The output is written the same way as the export. From the real
+export it produced 3 records with `email`, `emailVerified`, `username` and
+`displayName`, and nothing else.
+
+### Import
+
+Udibo's import is operator-run. In the Udibo repository it is:
+
+```sh
+node --env-file=.env apps/api/scripts/db/import-users.ts udibo-import.ndjson <tenant id>
+```
+
+Against a hosted tenant, Udibo runs it for you. The import was rehearsed on a
+local Udibo (`origin/main` at `3183ab4`, a scratch tenant), with three
+synthetic records shaped exactly like the real export and run through
+`auth0-to-udibo`:
+- **Import:** 3 imported, no errors; a repeated import skipped all 3.
+- **Accounts:** none has a password or an imported credential, and each keeps
+  its email and verified flag. Its username is the email's local part (Auth0's
+  `nickname`).
+- **Password sign-in:** refused.
+- **Emailed sign-in:** one email with a 6-digit code and a link, and the link
+  signs the person in. That held for the verified account and for the
+  unverified one.
+
+### Recovery
+
+A user with no password signs in by one of two hosted paths:
+- **An emailed code or link**, on the sign-in page, when the tenant offers
+  email sign-in.
+- **"Forgot password?"**, which emails a link to set a password. The
+  rehearsal exercised the emailed sign-in, not this path, for an account with
+  no password.
+
+Both need the tenant to send email and the user to still read that inbox. Tell
+users before the switch that their first sign-in will be by email. The browser
+tests cover neither path: they would need a mailbox.
+
+### What else differs from Udibo's recipe
+
+The recipe's example records and its fixture
+(`apps/api/src/services/identity/testdata/migration/auth0.json` in the Udibo
+repository) differ from the real export:
+- `identities[]` carries a `profileData` object, which the fixture lacks.
+- Empty metadata is left out, not sent as `{}`.
+- The real records carry `picture`, `created_at`, `updated_at`, `last_login`
+  and `logins_count`, which the fixture leaves out.
+- The fixture's names and hashes are not in a default database user's
+  export: `given_name`, `family_name` and `username` appear only when set.
+
+For a database user, `name` and `nickname` are what Auth0 set at sign-up. So
+`displayName` and `username` come from them, not from anything the user
+chose.
+
+### After the move
+
+Once the users and the client have moved, the Auth0 tenant can be turned off.
+The Live tenant workflow's Auth0 job, kept at step 2 as the rollback check,
+goes with it.
+
 ## Run it
 
 Requirements: Node.js 22.12 or later, and a Udibo tenant set up as in
@@ -446,6 +593,11 @@ dashboard:
    only (no scopes needed). Its Client ID and Client Secret are the two
    optional secrets below; without them the audience test skips and the rest
    run.
+8. **An application for the user export, for step 3.** _Applications →
+   Create Application_, type **Machine to Machine Applications**, authorized
+   for the **Auth0 Management API** with the `read:users` scope only. Its
+   Client ID and Client Secret are the two export secrets below; nothing but
+   the manual export run reads them.
 
 Then add these **repository secrets** (_Settings → Secrets and variables →
 Actions_):
@@ -459,6 +611,13 @@ Actions_):
 | `AUTH0_TEST_PASSWORD` | The test user's password |
 | `AUTH0_OTHER_AUDIENCE_CLIENT_ID` | Optional: the machine-to-machine application's Client ID |
 | `AUTH0_OTHER_AUDIENCE_CLIENT_SECRET` | Optional: its Client Secret |
+| `AUTH0_EXPORT_CLIENT_ID` | Step 3: the export application's Client ID |
+| `AUTH0_EXPORT_CLIENT_SECRET` | Step 3: its Client Secret |
+
+To export the users from CI, run the Live tenant workflow by hand with
+**export-auth0-users** checked. It runs only the export job, prints the shape
+of the export and of the import records (field names, types and counts, never
+a value), deletes both files and uploads nothing.
 
 For a local run against the tenant, put the same names and values in
 `.env.local`, which git ignores, and run `E2E_PROVIDER=auth0 npm run test:e2e`. The workflow passes the secrets only to the steps that check
@@ -472,6 +631,7 @@ trace includes what each step typed.
 | 0 | not used | 22, 24 (CI); 26 (locally) | 2026-11-06, [run 42172564187](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42172564187): 6 of 6 passed |
 | 1 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-08, [run 42560839171](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42560839171): 7 of 7 passed |
 | 2 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-10, [run 42954125573](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42954125573): 7 of 7 passed against Udibo, 7 of 7 against Auth0 |
+| 3 | 0.51.0 | 22, 24 (CI); 26 (locally) | Export: 2026-11-10, [run 42956429750](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42956429750), 3 users. Tests: see the step 3 PR |
 
 ## The upstream sample's README
 
