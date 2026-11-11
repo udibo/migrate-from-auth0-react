@@ -29,3 +29,7 @@ auth_config.json
 # Playwright
 /test-results
 /playwright-report
+
+# User exports and import files hold personal data; never commit them
+*.ndjson
+*.ndjson.partial
