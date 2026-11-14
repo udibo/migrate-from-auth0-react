@@ -1,7 +1,7 @@
 /**
  * Turns the Auth0 user records scripts/export-auth0-users.mjs wrote into
- * Udibo's user import records (`UserImportRecord`), one per line, following
- * the field mapping in Udibo's Auth0 migration recipe:
+ * Udibo's user import records (`UserImportRecord`), one per line, with this
+ * field mapping:
  *
  *   email, email_verified          → email, emailVerified
  *   nickname, given_name,

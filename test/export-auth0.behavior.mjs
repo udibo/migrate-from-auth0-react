@@ -242,7 +242,7 @@ describe("the private file", () => {
 });
 
 describe("turning Auth0 records into Udibo import records", () => {
-  test("maps a database user by the recipe's mapping, with no password", () => {
+  test("maps a database user field by field, with no password", () => {
     assert.deepEqual(toImportRecord(ADA), {
       email: "ada@example.test",
       emailVerified: true,

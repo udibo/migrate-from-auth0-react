@@ -35,7 +35,7 @@ import { refuseExisting, withInterrupts, writePrivateNdjson } from "./private-fi
 const USAGE = "Usage: npm run export:auth0 -- <file> [--connection-id=con_…]";
 const PAGE_SIZE = 100;
 
-/** The profile fields the export job is asked for: everything the recipe maps, and the account's state. */
+/** The profile fields the export job is asked for: everything scripts/auth0-to-udibo.mjs maps, and the account's state. */
 export const EXPORT_FIELDS = [
   "user_id",
   "email",
