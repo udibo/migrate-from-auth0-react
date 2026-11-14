@@ -323,6 +323,136 @@ describe("turning Auth0 records into Udibo import records", () => {
   });
 });
 
+describe("marking password users for a check against Auth0 at sign-in", () => {
+  const CONNECTION = "Username-Password-Authentication";
+  const marked = (user) => toImportRecord(user, { remotePasswordConnection: CONNECTION }).remotePassword;
+
+  test("names a database user of the connection by its Auth0 user id, with its email as the login", () => {
+    assert.deepEqual(toImportRecord(ADA, { remotePasswordConnection: CONNECTION }), {
+      email: "ada@example.test",
+      emailVerified: true,
+      username: "ada",
+      firstName: "Ada",
+      lastName: "Lovelace",
+      displayName: "Ada Lovelace",
+      metadata: { roles: ["admin"] },
+      userMetadata: { theme: "light" },
+      remotePassword: { subject: "auth0|a1b2c3", login: "ada@example.test" },
+    });
+  });
+
+  const { email: _email, ...NO_EMAIL } = ADA;
+
+  test("uses the Auth0 username as the login for a user with no email, when it is the username the record carries", () => {
+    const record = toImportRecord({ ...NO_EMAIL, username: "ada.l", nickname: "ada.l" }, { remotePasswordConnection: CONNECTION });
+    assert.equal(record.username, "ada.l");
+    assert.deepEqual(record.remotePassword, { subject: "auth0|a1b2c3", login: "ada.l" });
+  });
+
+  test("the email is the login when a user has both an email and a username", () => {
+    assert.deepEqual(marked({ ...ADA, username: "ada.l" }), { subject: "auth0|a1b2c3", login: "ada@example.test" });
+  });
+
+  const withUserId = (id) => ({ ...ADA, user_id: `auth0|${id}`, identities: [{ ...ADA.identities[0], user_id: id }] });
+  const emailOfLength = (length) => `${"a".repeat(length - "@example.test".length)}@example.test`;
+
+  test("accepts a subject or a login of up to 255 characters, and no longer", () => {
+    for (const [length, accepted] of [[254, true], [255, true], [256, false]]) {
+      const email = emailOfLength(length);
+      assert.equal(email.length, length);
+      assert.equal(marked({ ...ADA, email })?.login, accepted ? email : undefined, `login of ${length}`);
+
+      const id = "b".repeat(length - "auth0|".length);
+      assert.equal(marked(withUserId(id))?.subject, accepted ? `auth0|${id}` : undefined, `subject of ${length}`);
+    }
+  });
+
+  test("marks nobody unless a connection is named", () => {
+    assert.equal("remotePassword" in toImportRecord(ADA), false);
+    assert.equal("remotePassword" in toImportRecord(ADA, {}), false);
+  });
+
+  for (const [who, user] of [
+    ["a social user", ALAN],
+    ["a database user of another connection", { ...ADA, identities: [{ ...ADA.identities[0], connection: "legacy-users" }] }],
+    ["a user Auth0 has blocked", { ...ADA, blocked: true }],
+    ["a user with neither an email nor a username", { ...ADA, email: undefined }],
+    ["a user with no email, username or nickname", { ...NO_EMAIL, nickname: undefined }],
+    ["a user with no Auth0 user id",{ ...ADA, user_id: undefined }],
+    [
+      "a user whose database identity is linked under a social one",
+      { ...ALAN, identities: [...ALAN.identities, { ...ADA.identities[0] }] },
+    ],
+    ["a user whose email is longer than Udibo accepts, even with a username that fits", { ...ADA, email: emailOfLength(256), username: "ada", nickname: "ada" }],
+    ["a user whose Auth0 user id is longer than Udibo accepts", withUserId("b".repeat(300))],
+    ["a user with no email whose Auth0 username is not the username the record carries", { ...NO_EMAIL, username: "ada.l", nickname: "ada" }],
+    ["a user with no email and no nickname, whose record carries no username", { ...NO_EMAIL, username: "ada.l", nickname: undefined }],
+  ]) {
+    test(`leaves ${who} unmarked`, () => {
+      assert.equal(marked(user), undefined);
+    });
+  }
+
+  test("writes the markers, counts them, and never writes a hash beside one", async () => {
+    const hashed = { ...ADA, user_id: "auth0|d4e5f6", email: "grace@example.test", identities: [{ ...ADA.identities[0], user_id: "d4e5f6" }], password_hash: "$2b$10$abcdefghijklmnopqrstuuabcdefghijklmnopqrstuvwxyz0123" };
+    const input = join(dir, "export.ndjson");
+    fs.writeFileSync(input, [ADA, ALAN, hashed].map((u) => JSON.stringify(u)).join("\n"));
+    const output = join(dir, "import.ndjson");
+
+    assert.deepEqual(await transformExport(input, output, undefined, { remotePasswordConnection: CONNECTION }), {
+      count: 3,
+      hashesDropped: 1,
+      identitiesDropped: 0,
+      remotePasswords: 2,
+    });
+
+    assert.deepEqual(lines(output).map((record) => record.remotePassword), [
+      { subject: "auth0|a1b2c3", login: "ada@example.test" },
+      undefined,
+      { subject: "auth0|d4e5f6", login: "grace@example.test" },
+    ]);
+    assert.equal(lines(output).some((record) => "legacyCredential" in record), false);
+    assert.equal(mode(output), 0o600);
+  });
+
+  test("the command takes the connection as --remote-password and reports how many users it marked", async () => {
+    const input = join(dir, "export.ndjson");
+    fs.writeFileSync(input, [ADA, ALAN].map((u) => JSON.stringify(u)).join("\n"));
+    const output = join(dir, "import.ndjson");
+    const stderr = [];
+    const original = console.error;
+    console.error = (message) => stderr.push(String(message));
+    try {
+      assert.equal(await transformMain([`--remote-password=${CONNECTION}`, input, output]), 0);
+      assert.equal(await transformMain(["--remote-password=", input, join(dir, "empty.ndjson")]), 2);
+      assert.equal(await transformMain(["--remote-password", input, join(dir, "bare.ndjson")]), 2);
+      assert.equal(await transformMain(["--other=1", input, join(dir, "other.ndjson")]), 2);
+      assert.equal(await transformMain([`--remote-password=${CONNECTION}`, "--remote-password=legacy-users", input, join(dir, "twice.ndjson")]), 2);
+    } finally {
+      console.error = original;
+    }
+    assert.equal(stderr[0], `Wrote 2 import records to ${output} (mode 0600), 1 with a remotePassword for the ${CONNECTION} connection and 1 with no password.`);
+    assert.deepEqual(lines(output).map((record) => "remotePassword" in record), [true, false]);
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["export.ndjson", "import.ndjson"]);
+  });
+
+  test("without --remote-password the command writes no marker and says so as before", async () => {
+    const input = join(dir, "export.ndjson");
+    fs.writeFileSync(input, JSON.stringify(ADA));
+    const output = join(dir, "import.ndjson");
+    const stderr = [];
+    const original = console.error;
+    console.error = (message) => stderr.push(String(message));
+    try {
+      assert.equal(await transformMain([input, output]), 0);
+    } finally {
+      console.error = original;
+    }
+    assert.deepEqual(stderr, [`Wrote 1 import records to ${output} (mode 0600), none with a password.`]);
+    assert.equal("remotePassword" in lines(output)[0], false);
+  });
+});
+
 describe("describing an export", () => {
   test("names every field path, its types and how many records carry it, and no value", () => {
     const shape = describeRecords([ADA, ALAN]);
