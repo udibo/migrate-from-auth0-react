@@ -220,12 +220,12 @@ with Auth0's list in step 1:
 ### Findings
 
 - **Udibo did not answer CORS for a browser-only client until 2026-11-09.**
-  Before udibo/udibo#3280, none of the discovery documents, `/token`,
+  Before that, none of the discovery documents, `/token`,
   `/userinfo` or `/revoke` sent `Access-Control-Allow-Origin`, and every
   preflight got 404. A single-page app could not discover the issuer or
   redeem its code, though Udibo's documentation listed browser-only public
   clients as supported. The fix answers CORS as described above. This step
-  was checked against an in-process Udibo at that commit, from
+  was checked against a local Udibo with that fix, from
   `http://localhost:3000` with a public Development application:
   - discovery, the code exchange, UserInfo and revocation all succeed, with
     the app's origin named and no credentials allowed;
@@ -258,7 +258,7 @@ above. During the move:
 3. **Auth0 is turned off** once the last client has moved and its tokens have
    expired. A single-page app holds no refresh token from Auth0 (step 1
    requested none), so that is the access-token lifetime, 24 hours by default.
-   Unless you took step 4: then it stays up until the end date you set there.
+   If you take step 4, Auth0 stays up until the end date you set there.
 
 Until step 3 imports the users, an Auth0 user has no Udibo account and cannot
 sign in through Udibo.
@@ -269,7 +269,8 @@ The **Live tenant** workflow now runs the browser tests against both tenants,
 one job each. The Udibo job is this step's evidence. The Auth0 job stays as
 the rollback check: the same code, configured for Auth0, still signs in, so
 the move can be reverted by configuration while users and clients are still
-moving. It can be dropped once step 3 has retired the Auth0 tenant. Each job
+moving. It can be dropped once the Auth0 tenant is retired (after step 3, or
+after step 4's end date). Each job
 skips, and says so, until its own secrets are set.
 
 ## Step 3: move the users, without their passwords
@@ -317,7 +318,7 @@ npm run export:auth0 -- auth0-users.ndjson
 `scripts/export-auth0-users.mjs` signs in as a machine-to-machine application
 authorized for the **Auth0 Management API** with `read:users` (see [Set up the
 Auth0 tenant](#set-up-the-auth0-tenant)). It asks for a bulk export job
-(`POST /api/v2/jobs/users-exports`) for the profile fields the recipe maps,
+(`POST /api/v2/jobs/users-exports`) for the profile fields the mapping below reads,
 polls the job and downloads its gzipped NDJSON. If Auth0 refuses the job or
 its status, it says why and reads `GET /api/v2/users` page by page instead,
 asking for the same fields (`fields` with `include_fields=true`).
@@ -368,8 +369,9 @@ which printed only field names, types and counts):
 npm run auth0-to-udibo -- auth0-users.ndjson udibo-import.ndjson
 ```
 
-`scripts/auth0-to-udibo.mjs` applies the mapping from Udibo's Auth0 migration
-recipe, with one correction for social identities:
+`scripts/auth0-to-udibo.mjs` writes Udibo's
+[import file format](https://www.udibo.com/docs/identity/user-import#the-file)
+with this mapping:
 
 | Auth0 | Udibo import record |
 | --- | --- |
@@ -381,11 +383,9 @@ recipe, with one correction for social identities:
 It writes no `legacyCredential`, and a hash a record does carry is dropped and
 counted.
 
-**Social identities.** The recipe copies Auth0's provider name, but Udibo
-links a social identity by its preset type: `providerKey` in Udibo's
-`apps/api/src/services/identity/identity-provider.ts` returns the preset type
-(`google`, `github`, `discord`, `apple`) for a preset provider. Auth0 calls
-Google `google-oauth2`.
+**Social identities.** Auth0's provider name cannot be copied across. Udibo
+links a social identity by its own provider key (`google`, `github`,
+`discord` or `apple`), and Auth0 calls Google `google-oauth2`.
 - **Translated:** the transform renames `google-oauth2` to `google` and keeps
   `github` and `apple`. Auth0 documents an identity's `user_id` as "User's
   unique identifier for this connection/provider". Udibo's connectors
@@ -405,14 +405,9 @@ export it produced 3 records with `email`, `emailVerified`, `username` and
 already exists, so one imported here cannot be given step 4's `remotePassword`
 by importing it again.
 
-Udibo's import is operator-run. In the Udibo repository it is:
-
-```sh
-node --env-file=.env apps/api/scripts/db/import-users.ts udibo-import.ndjson <tenant id>
-```
-
-Against a hosted tenant, Udibo runs it for you. The import was rehearsed on a
-local Udibo (`origin/main` at `3183ab4`, a scratch tenant), with three
+Udibo runs the import for you: you send the file and ask
+([Udibo runs the import for you](https://www.udibo.com/docs/identity/user-import#udibo-runs-the-import-for-you)).
+The import was rehearsed on a local Udibo, in a scratch tenant, with three
 synthetic records shaped exactly like the real export and run through
 `auth0-to-udibo`:
 - **Import:** 3 imported, no errors; a repeated import skipped all 3.
@@ -437,19 +432,17 @@ Both need the tenant to send email and the user to still read that inbox. Tell
 users before the switch that their first sign-in will be by email. The browser
 tests cover neither path: they would need a mailbox.
 
-### What else differs from Udibo's recipe
+### What a real export holds that a sample may not
 
-The recipe's example records and its fixture
-(`apps/api/src/services/identity/testdata/migration/auth0.json` in the Udibo
-repository) differ from the real export:
-- `identities[]` carries a `profileData` object, which the fixture lacks.
+A hand-written sample of an Auth0 user can differ from the real export:
+- `identities[]` carries a `profileData` object.
 - Empty metadata is left out, not sent as `{}`.
-- The real records carry `picture`, `created_at`, `updated_at`, `last_login`
-  and `logins_count`, which the fixture leaves out.
-- The fixture's names and hashes are not in a default database user's
-  export: `given_name`, `family_name` and `username` appear only when set.
-- The recipe maps a social identity's Auth0 provider name straight across,
-  but Udibo matches the preset type: `google-oauth2` has to become `google`.
+- The records carry `picture`, `created_at`, `updated_at`, `last_login` and
+  `logins_count`, which the import has no field for.
+- A default database user's export has no names and no hash: `given_name`,
+  `family_name` and `username` appear only when set.
+- A social identity's provider is Auth0's name for it: `google-oauth2` has to
+  become `google`.
 
 For a database user, `name` and `nickname` are what Auth0 set at sign-up. So
 `displayName` and `username` come from them, not from anything the user
@@ -547,7 +540,7 @@ a `remotePassword`, so they sign in the step 3 way:
 `blocked: true` still gets a Udibo account, without a password, as at step 3.
 Remove those records from the file if they should not have one.
 
-**Users Auth0 asks for a second factor cannot use step 4.** Auth0 can answer
+**Users Auth0 asks for a second factor should not use step 4.** Auth0 can answer
 their check with `mfa_required`, which Udibo counts as a failed attempt even
 when the password was right, and five such answers in a row pause checks for
 every pending user for a minute.
@@ -631,7 +624,9 @@ Plan two runs:
 Sign in to the app as the test user, with the password that user has in
 Auth0. Per the guide:
 
-- **It works:** the Udibo tenant's audit log records `auth.password.upgraded`
+- **It works:** the Udibo tenant's
+  [audit log](https://www.udibo.com/docs/identity/audit-log) records
+  `auth.password.upgraded`
   with `verifierId` `remote:auth0`.
 - **It is refused although the password is right:** the audit log's latest
   `auth.sign_in.failed` event for that user has a `reason`:
@@ -640,7 +635,7 @@ Auth0. Per the guide:
   | --- | --- |
   | `wrong_password` | Auth0 answered `invalid_grant`: it does not know that `login` with that password in that realm. Check the `login` |
   | `migration_unavailable` | The check was sent and no usable answer came back: Auth0 answered with something other than a match or `invalid_grant`, or for a different `subject`. A wrong client secret or realm, or a missing Password grant, should show up here (not tested in this repository), and so does a `subject` that is not the ID token's `sub` |
-  | `not_checked` | Nothing was sent. After five unanswered checks in a row Udibo pauses checks for every pending user for a minute; a spent budget or a client secret Udibo can no longer read gives the same reason |
+  | `not_checked` | Nothing was sent. After five checks in a row that get no usable answer Udibo pauses checks for every pending user for a minute; a spent budget or a client secret Udibo can no longer read gives the same reason |
   | `locked` | The account is locked after too many failed attempts, ten by default, and nothing was sent |
   | `no_password` | No check was possible: the source is off or past its end date, or attack protection is not on Enforce |
 
@@ -689,8 +684,15 @@ skipped record's `remotePassword` never lands.
 
 Udibo sends no more checks, whatever the switch says, and erases the stored
 client secret within a few minutes. A user who never signed in is where step
-3 would have left them: no password at Udibo, and a first sign-in by emailed
-code or link or through "Forgot password?". Tell them before the date.
+3 would have left them, with no password at Udibo:
+
+- **An account with an email address** signs in the first time through
+  "Forgot password?", or by an emailed code or link when the tenant offers
+  email sign-in.
+- **An account with no email** cannot use those. An administrator adds an
+  address or sets a temporary password from the user's page.
+
+Tell them before the date.
 
 Then delete the source under **Danger zone** on the Migration page, delete
 the dedicated Auth0 application, and turn the Auth0 tenant off as
