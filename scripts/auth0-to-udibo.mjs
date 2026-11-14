@@ -26,9 +26,8 @@
  * connection also gets `remotePassword: { subject, login }`: its Auth0
  * `user_id`, and the email (or, without one, the username) it signs in to
  * Auth0 with. Udibo then checks that user's first password sign-in against
- * Auth0 and keeps the password once Auth0 confirms it. A blocked user, a user
- * with no login, and one whose database identity is linked under another
- * identity are written without it.
+ * Auth0 and keeps the password once Auth0 confirms it. `remotePasswordFor`
+ * lists who is written without it.
  *
  *   npm run auth0-to-udibo -- --remote-password=<connection> <auth0 export> <udibo import file>
  *
@@ -73,24 +72,28 @@ export function carriesPasswordHash(user) {
   return user.password_hash !== undefined || user.custom_password_hash !== undefined;
 }
 
-function remotePasswordPart(value) {
-  const part = present(value);
-  return part !== undefined && part.length <= REMOTE_PASSWORD_PART_MAX_LENGTH ? part : undefined;
-}
-
 /**
  * The `remotePassword` for a user who signs in to Auth0 with a password in
  * the database connection named `connection`, or undefined for anyone else.
  * `subject` is the `sub` Auth0 puts in that user's ID token, which is what
- * Udibo compares; `login` is what Auth0's password grant takes as `username`.
+ * Udibo compares; `login` is what Auth0's password grant takes as `username`:
+ * the email when the user has one, else the Auth0 username.
+ *
+ * Undefined for a blocked user, a user with no login, a user whose `subject`
+ * or `login` is longer than Udibo accepts, a user whose database identity is
+ * not the one `user_id` names, and a user with no email whose Auth0 username
+ * is not the username the import record carries (Auth0's `nickname`), since
+ * that person could not name their Udibo account with it.
  */
 export function remotePasswordFor(user, connection) {
   if (user.blocked === true) return undefined;
-  const subject = remotePasswordPart(user.user_id);
-  const login = remotePasswordPart(user.email) ?? remotePasswordPart(user.username);
-  if (subject === undefined || login === undefined) return undefined;
+  const email = present(user.email);
+  const login = email ?? present(user.username);
+  if (login === undefined || login.length > REMOTE_PASSWORD_PART_MAX_LENGTH) return undefined;
+  if (email === undefined && login !== present(user.nickname)) return undefined;
+  const subject = user.user_id;
   const signsInHere = (user.identities ?? []).some((identity) => identity.connection === connection && subject === `auth0|${identity.user_id}`);
-  return signsInHere ? { subject, login } : undefined;
+  return signsInHere && subject.length <= REMOTE_PASSWORD_PART_MAX_LENGTH ? { subject, login } : undefined;
 }
 
 /**

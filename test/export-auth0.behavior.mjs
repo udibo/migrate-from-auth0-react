@@ -341,9 +341,30 @@ describe("marking password users for a check against Auth0 at sign-in", () => {
     });
   });
 
-  test("uses the Auth0 username as the login for a database user with no email", () => {
-    const { email: _email, ...byUsername } = { ...ADA, username: "ada.l" };
-    assert.deepEqual(marked(byUsername), { subject: "auth0|a1b2c3", login: "ada.l" });
+  const { email: _email, ...NO_EMAIL } = ADA;
+
+  test("uses the Auth0 username as the login for a user with no email, when it is the username the record carries", () => {
+    const record = toImportRecord({ ...NO_EMAIL, username: "ada.l", nickname: "ada.l" }, { remotePasswordConnection: CONNECTION });
+    assert.equal(record.username, "ada.l");
+    assert.deepEqual(record.remotePassword, { subject: "auth0|a1b2c3", login: "ada.l" });
+  });
+
+  test("the email is the login when a user has both an email and a username", () => {
+    assert.deepEqual(marked({ ...ADA, username: "ada.l" }), { subject: "auth0|a1b2c3", login: "ada@example.test" });
+  });
+
+  const withUserId = (id) => ({ ...ADA, user_id: `auth0|${id}`, identities: [{ ...ADA.identities[0], user_id: id }] });
+  const emailOfLength = (length) => `${"a".repeat(length - "@example.test".length)}@example.test`;
+
+  test("accepts a subject or a login of up to 255 characters, and no longer", () => {
+    for (const [length, accepted] of [[254, true], [255, true], [256, false]]) {
+      const email = emailOfLength(length);
+      assert.equal(email.length, length);
+      assert.equal(marked({ ...ADA, email })?.login, accepted ? email : undefined, `login of ${length}`);
+
+      const id = "b".repeat(length - "auth0|".length);
+      assert.equal(marked(withUserId(id))?.subject, accepted ? `auth0|${id}` : undefined, `subject of ${length}`);
+    }
   });
 
   test("marks nobody unless a connection is named", () => {
@@ -356,12 +377,16 @@ describe("marking password users for a check against Auth0 at sign-in", () => {
     ["a database user of another connection", { ...ADA, identities: [{ ...ADA.identities[0], connection: "legacy-users" }] }],
     ["a user Auth0 has blocked", { ...ADA, blocked: true }],
     ["a user with neither an email nor a username", { ...ADA, email: undefined }],
-    ["a user with no Auth0 user id", { ...ADA, user_id: undefined }],
+    ["a user with no email, username or nickname", { ...NO_EMAIL, nickname: undefined }],
+    ["a user with no Auth0 user id",{ ...ADA, user_id: undefined }],
     [
       "a user whose database identity is linked under a social one",
       { ...ALAN, identities: [...ALAN.identities, { ...ADA.identities[0] }] },
     ],
-    ["a user whose login is longer than Udibo accepts", { ...ADA, email: `${"a".repeat(250)}@example.test` }],
+    ["a user whose email is longer than Udibo accepts, even with a username that fits", { ...ADA, email: emailOfLength(256), username: "ada", nickname: "ada" }],
+    ["a user whose Auth0 user id is longer than Udibo accepts", withUserId("b".repeat(300))],
+    ["a user with no email whose Auth0 username is not the username the record carries", { ...NO_EMAIL, username: "ada.l", nickname: "ada" }],
+    ["a user with no email and no nickname, whose record carries no username", { ...NO_EMAIL, username: "ada.l", nickname: undefined }],
   ]) {
     test(`leaves ${who} unmarked`, () => {
       assert.equal(marked(user), undefined);
@@ -402,6 +427,7 @@ describe("marking password users for a check against Auth0 at sign-in", () => {
       assert.equal(await transformMain(["--remote-password=", input, join(dir, "empty.ndjson")]), 2);
       assert.equal(await transformMain(["--remote-password", input, join(dir, "bare.ndjson")]), 2);
       assert.equal(await transformMain(["--other=1", input, join(dir, "other.ndjson")]), 2);
+      assert.equal(await transformMain([`--remote-password=${CONNECTION}`, "--remote-password=legacy-users", input, join(dir, "twice.ndjson")]), 2);
     } finally {
       console.error = original;
     }
