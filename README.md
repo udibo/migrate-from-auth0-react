@@ -17,6 +17,7 @@ exactly what that step changes.
 | `step-1-udibo-package` | `@udibo/oauth2`, still against Auth0 |
 | `step-2-udibo-idp` | `@udibo/oauth2` against Udibo's hosted identity service |
 | `step-3-user-import` | Users imported from Auth0 into Udibo, without passwords |
+| `step-4-password-migration` | Optional: imported users keep their Auth0 password, which Udibo checks against Auth0 the first time each signs in |
 
 ## Step 0: the upstream sample
 
@@ -293,10 +294,13 @@ releases them only through a support ticket:
 - **Format:** neither page states the hash algorithm or file format.
 
 This tenant is on the Free plan, so the hashes cannot be requested at all.
-Udibo checks no password against Auth0 at sign-in, so the accounts import
+At this step Udibo checks no password against Auth0, so the accounts import
 passwordless, as Udibo's migration guide says to do when hashes cannot be
 exported. A tenant that does obtain bcrypt hashes can add them to the
 records as `legacyCredential`, and its users then keep their passwords.
+[Step 4](#step-4-optional-keep-the-passwords-checked-against-auth0-at-sign-in)
+is the other way to keep them: Udibo checks each user's old password against
+Auth0 once. Choose before you import, because it changes the import records.
 
 ### Export
 
@@ -446,6 +450,154 @@ chose.
 Once the users and the client have moved, the Auth0 tenant can be turned off.
 The Live tenant workflow's Auth0 job, kept at step 2 as the rollback check,
 goes with it.
+
+## Step 4 (optional): keep the passwords, checked against Auth0 at sign-in
+
+Step 3 leaves every password behind. Step 4 keeps them without a hash export.
+Each password user is imported with a `remotePassword` that names their Auth0
+account, and the Udibo tenant registers the Auth0 tenant as its **migration
+source**. The first time one of them signs in at Udibo with their old
+password, Udibo checks it against Auth0 once. When Auth0 confirms it, Udibo
+stores the password in its own format and signs the person in, and that
+person's later sign-ins never reach Auth0. The app does not change.
+
+Udibo's
+[password migration guide](https://www.udibo.com/docs/identity/password-migration)
+is the reference for all of it. This step is that guide applied to this
+tenant. It is optional: skip it and step 3 stands as it is.
+
+### What it costs
+
+- **Udibo sends each pending user's password to Auth0**, once for each
+  sign-in attempt that reaches a check.
+- **The Auth0 tenant stays up until the end date you set.** Turning it off,
+  as [After the move](#after-the-move) describes, waits until then.
+- **Failed password sign-ins on the Udibo tenant take at least 2.4 seconds**
+  instead of 400 ms while the source is on, for every account.
+- **It replaces step 3's import; it cannot follow it.** Only the import
+  writes `remotePassword`, and a second import skips accounts that already
+  exist. Accounts already imported without one stay passwordless.
+
+### Mark the password users
+
+```sh
+npm run auth0-to-udibo -- --remote-password=Username-Password-Authentication auth0-users.ndjson udibo-import.ndjson
+```
+
+`--remote-password` names the Auth0 database connection the users sign in to.
+Without it the command writes exactly what it wrote at step 3. With it, each
+database user of that connection also gets:
+
+| Udibo import record | Auth0 | Why |
+| --- | --- | --- |
+| `remotePassword.subject` | `user_id`, such as `auth0\|65f1a2b3c4d5e6f7a8b9c0d2` | Auth0 puts it in the `sub` claim of that user's ID token, and Udibo accepts Auth0's answer only for that `sub` |
+| `remotePassword.login` | `email`, or `username` for a user with no email | What the user types into Auth0's login page; Udibo sends it as the username |
+
+The command reports how many records it marked. It writes these users without
+a `remotePassword`, so they sign in the step 3 way:
+
+- a social user, and a database user of any other connection;
+- a user Auth0 has blocked (`blocked: true`);
+- a user with no `user_id`, with neither an email nor a username, or with
+  either value longer than 255 characters;
+- a user whose database identity is linked under another identity, because
+  the export's `email` is then not that identity's login.
+
+**Users Auth0 asks for a second factor.** The export does not say who they
+are, so the command cannot leave them out. Remove `remotePassword` from their
+records yourself: Auth0 can answer their check with `mfa_required`, which
+Udibo counts as a failed attempt even when the password was right.
+
+**The mapping cannot be corrected after the import.** A wrong `subject` or
+`login` looks like a wrong password every time. Import one test user first
+and sign in as them before importing the rest.
+
+### Create the Auth0 application
+
+Udibo checks a password with Auth0's password grant, restricted to one
+database connection, through an application that exists for nothing else.
+Create it as item 9 of [Set up the Auth0 tenant](#set-up-the-auth0-tenant)
+describes: a Regular Web Application with the **Password** grant, its secret
+sent in the request body, the users' connection enabled, and no APIs
+authorized, so its secret can do no more than check passwords. Auth0's Free
+plan allows the grant.
+
+### Register the source in Udibo
+
+In the Udibo tenant's dashboard, open **Sign-in** → **Migration**. The page
+needs the **Manage password migration** permission, which only the Owner
+access level holds by default.
+
+1. **Check against Auth0.** Enter:
+   - the Auth0 **domain**, such as `dev-abc123.us.auth0.com` (the
+     `*.auth0.com` domain, not a custom domain);
+   - the dedicated application's **client ID** and **client secret**;
+   - the **realm**: the connection's name,
+     `Username-Password-Authentication` here.
+2. **Pick the end date**, at most a year away. Checks stop at 00:00 UTC on
+   that day.
+3. **Leave "Start checking passwords now" off**, confirm with your own Udibo
+   password, and connect. Udibo never shows the client secret again.
+4. **Send a test call.** It reads the Auth0 domain's discovery document and
+   carries no password. It proves the domain and nothing about the client ID,
+   secret or realm; the test user's sign-in proves those.
+5. **Turn it on** under **Status**, confirming again.
+
+Udibo sends checks only while the tenant's attack protection mode is
+**Enforce**.
+
+### Import, then sign in as one user
+
+The import is run as at [step 3](#import), with the new file. Then sign in to
+the app as one imported test user, with the password that user has in Auth0:
+
+- **It works:** the Udibo tenant's audit log records `auth.password.upgraded`
+  with `verifierId` `remote:auth0`, and **Migrated users** on the Migration
+  page rises by one.
+- **It is refused although the password is right:** the audit log's
+  `auth.sign_in.failed` event for that user says why. `wrong_password` means
+  Auth0 refused the `login` in that realm; `migration_unavailable` means no
+  usable answer came back, or Auth0 answered for a different `subject`;
+  `no_password` means no check was possible, for example because the source
+  is off.
+
+### What the user sees
+
+- **The same sign-in page as at step 2**, with their email or username and
+  their Auth0 password. The first successful sign-in takes as long as Auth0
+  takes to answer; later ones do not involve Auth0.
+- **A wrong password gets the normal sign-in error**, and so does every other
+  refusal: Auth0 not answering, the source off or past its end date. The
+  person cannot tell these apart.
+- **Ten wrong passwords in a row get the user blocked by Auth0.** Every check
+  reaches Auth0 from Udibo's address, and in Udibo's test on a Free tenant
+  Auth0 then refused the right password too, with `429 too_many_attempts`.
+  Unblock the user in Auth0, or have them use "Forgot password?".
+- **"Forgot password?" still works**, as at [step 3](#recovery). Completing it
+  sets a new password, and the old one is never checked.
+- **Second factors do not come across.** People enroll again at Udibo.
+
+### After the end date
+
+Udibo sends no more checks, whatever the switch says, and erases the stored
+client secret within a few minutes. A user who never signed in is where step
+3 would have left them: no password at Udibo, and a first sign-in by emailed
+code or link or through "Forgot password?". Tell them before the date.
+
+Then delete the source under **Danger zone** on the Migration page, delete
+the dedicated Auth0 application, and turn the Auth0 tenant off as
+[After the move](#after-the-move) describes.
+
+### What was tested
+
+- **The import records:** `npm run test:behavior` covers who gets a
+  `remotePassword` and who does not, with synthetic records.
+- **Auth0's answers:** the status codes and the block after ten wrong
+  passwords come from the test Udibo's guide reports, on a Free Auth0 tenant
+  with no second factor.
+- **Not run here:** the sign-in of an imported user through this repository's
+  Udibo tenant. The browser tests sign in as a user created in Udibo, so they
+  never reach a check.
 
 ## Run it
 
@@ -629,6 +781,19 @@ dashboard:
    Client ID and Client Secret are the two export secrets below; nothing but
    the manual export run reads them.
 
+9. **An application for the password checks, for step 4.** _Applications →
+   Create Application_, type **Regular Web Applications**, used for nothing
+   else. In its settings:
+   - _Advanced → Grant Types_: **Password**, and no other.
+   - _Credentials_: authentication method **Client Secret (Post)**, since
+     Udibo sends the secret in the request body.
+   - _Connections_: enable **Username-Password-Authentication**, the
+     connection the users are in. Its name is the realm.
+   - **APIs**: authorize none.
+
+   Its Client ID and Client Secret go into the Udibo dashboard at step 4 and
+   nowhere else: no script, test or workflow here reads them.
+
 Then add these **repository secrets** (_Settings → Secrets and variables →
 Actions_):
 
@@ -662,6 +827,7 @@ trace includes what each step typed.
 | 1 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-08, [run 42560839171](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42560839171): 7 of 7 passed |
 | 2 | 0.51.0 | 22, 24 (CI); 26 (locally) | 2026-11-10, [run 42954125573](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42954125573): 7 of 7 passed against Udibo, 7 of 7 against Auth0 |
 | 3 | 0.51.0 | 22, 24 (CI); 26 (locally) | Export: 2026-11-10, [run 42956429750](https://github.com/udibo/migrate-from-auth0-react/actions/runs/42956429750), 3 users. Tests: see the step 3 PR |
+| 4 | 0.51.0 | 22, 24 (CI); 26 (locally) | None yet: see [What was tested](#what-was-tested) |
 
 ## The upstream sample's README
 
